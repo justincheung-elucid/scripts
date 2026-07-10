@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
+import io
 import os
+import re
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -27,7 +29,15 @@ from src.tqdmcustom import tqdm as tqdm
 # ===== CLI =========================================
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("filepath_in", help="Path to a DICOM file, or a directory of DICOM files")
+    parser.add_argument(
+        "filepath_in",
+        nargs="+",
+        help=(
+            "One or more paths, each a DICOM file or a directory of DICOM files -- "
+            "shell globs work, e.g. describe.py ~/data/some-export/*/. Each path is "
+            "processed independently and its table saved to outputs/."
+        ),
+    )
     parser.add_argument(
         "-n",
         "--hide-null",
@@ -126,15 +136,35 @@ def parse_args():
     return args
 
 # ===== CORE IMPLEMENTATION =========================
+OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs"
+
+def sanitize_path_for_filename(path: Path) -> str:
+    resolved = str(path.resolve()).lstrip("/")
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", resolved)
+
+def output_path_for(path: Path) -> Path:
+    return OUTPUTS_DIR / f"{sanitize_path_for_filename(path)}.txt"
+
 def main(args: argparse.Namespace):
-    path = Path(args.filepath_in)
+    any_succeeded = False
+    for filepath_in in args.filepath_in:
+        if process_path(Path(filepath_in), args):
+            any_succeeded = True
+    if not any_succeeded:
+        sys.exit(1)
+
+def process_path(path: Path, args: argparse.Namespace) -> bool:
     picked_file = None
     is_directory_aggregate = path.is_dir() and not args.one
     combo_groups = args.combos or []
 
     if path.is_dir():
         if args.one:
-            picked_file = pick_representative_file(path)
+            files = list_directory_files(path)
+            if not files:
+                print(f"No DICOM files found under {path}.", file=sys.stderr)
+                return False
+            picked_file = pick_representative_file(files)
             rows = build_rows(read_dataset(picked_file), args.filters, args.pseudotags, combo_groups)
             rows = append_single_snapshot_combos(rows, combo_groups)
         else:
@@ -153,17 +183,26 @@ def main(args: argparse.Namespace):
         rows = [row for row in rows if not row_is_scattered(row)]
 
     if not rows:
-        print("No tags matched the given filters.", file=sys.stderr)
-        sys.exit(1)
+        print(f"No tags matched the given filters for {path}.", file=sys.stderr)
+        return False
 
     if is_directory_aggregate:
         rows = [rename_value_column(row) for row in rows]
 
     df = pd.DataFrame(rows).set_index("tag")
-    print_df_custom(df, max_colwidth=args.max_colwidth, pretty=not args.compact)
-
+    buf = io.StringIO()
+    print_df_custom(df, max_colwidth=args.max_colwidth, pretty=not args.compact, file=buf)
     if picked_file is not None:
-        print(picked_file.resolve())
+        print(picked_file.resolve(), file=buf)
+    output_text = buf.getvalue()
+
+    print(output_text, end="")
+
+    output_file = output_path_for(path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(output_text)
+    print(f"Wrote {output_file}", file=sys.stderr)
+    return True
 
 # ===== DETAILED IMPLEMENTATION =====================
 def read_dataset(filepath: Path) -> pydicom.Dataset:
@@ -172,10 +211,10 @@ def read_dataset(filepath: Path) -> pydicom.Dataset:
 def list_directory_files(directory: Path) -> list[Path]:
     return sorted(p for p in directory.rglob("*.dcm") if p.is_file())
 
-def pick_representative_file(directory: Path) -> Path:
+def pick_representative_file(files: list[Path]) -> Path:
     # Abstracted so the selection strategy can be swapped later. Currently: oldest
-    # file by modification time.
-    return min(list_directory_files(directory), key=lambda p: p.stat().st_mtime)
+    # file by modification time. Caller must ensure `files` is non-empty.
+    return min(files, key=lambda p: p.stat().st_mtime)
 
 VALUE_COUNTS_COLUMN = "value counts (unique value -> file count)"
 

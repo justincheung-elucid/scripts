@@ -42,10 +42,28 @@ summarize_s3_export_folder.py  # superseded by `describe.py -p` (Siemens ScanOpt
 ## `describe.py` usage
 
 ```
-describe.py FILEPATH_IN [-n] [-e] [-f FILE_OR_TAG ...] [-u] [-s] [-p] [-1] [-w N] [-c] [-o TAG TAG ...]
+describe.py FILEPATH_IN [FILEPATH_IN ...] [-n] [-e] [-f FILE_OR_TAG ...] [-u] [-s] [-p] [-1] [-w N] [-c] [-o TAG TAG ...]
 ```
 
-`FILEPATH_IN` is either a single DICOM file or a directory:
+`FILEPATH_IN` is **one or more** paths (`nargs="+"`), each either a single DICOM
+file or a directory — shell globs work naturally, e.g. `describe.py
+~/data/some-export/*/` to process every sibling series folder in one invocation.
+Each path is processed **independently** through the full pipeline below (its own
+table, its own hide/filter/combo results) — there is no cross-path aggregation or
+comparison table (that's `summarize_s3_export_folder.py`'s still-unreplicated
+"Folder summary", see Known gaps). A path with zero matching rows (e.g. an empty
+directory, or a filter that matches nothing) is skipped with a message on stderr
+rather than aborting the whole batch; the process exits 1 only if *every* path
+failed.
+
+Every path's rendered table is **always written to `outputs/`** (relative to
+`describe.py`'s own location, not the caller's cwd — created if needed, gitignored)
+in addition to being printed to stdout, named after a sanitized version of that
+path's resolved absolute path (`sanitize_path_for_filename` — non `[A-Za-z0-9._-]`
+runs become `_`), e.g. `~/data/foo/series_002` → `outputs/home_user_data_foo_series_002.txt`.
+This has no toggle yet (always on).
+
+For a single path, `FILEPATH_IN` is either a single DICOM file or a directory:
 - **File**: prints one row per tag (tag, name, VR, VM, value).
 - **Directory** (default): recursively globs `*.dcm` (skips non-DICOM clutter like
   `.tar.gz`/lock files that live alongside series folders in real exports), reads
@@ -55,7 +73,8 @@ describe.py FILEPATH_IN [-n] [-e] [-f FILE_OR_TAG ...] [-u] [-s] [-p] [-1] [-w N
 - **Directory + `-1`/`--one`**: instead of aggregating, picks one representative
   file (currently: oldest by mtime — this policy is isolated in
   `pick_representative_file()` specifically so it's easy to swap later) and runs
-  the single-file path on it, printing its resolved path afterward.
+  the single-file path on it, printing its resolved path afterward. Raises a clear
+  per-path skip (not a crash) if the directory has zero DICOM files.
 
 Flags:
 - `-n`/`--hide-null`: hide tags whose value is `None` (entirely absent from the file).
@@ -188,15 +207,34 @@ Single-file and `-1` mode reuse the exact same `compute_combo_rows` via
 `append_single_snapshot_combos`, just with one synthetic "file" key — no separate
 code path needed.
 
+**`process_path()` factors out what used to be `main()`'s whole body**, so
+multi-path support (`nargs="+"`) is just "call it in a loop, track whether anything
+succeeded" rather than a rewrite. `print_df_custom` gained a `file=` passthrough
+param (mirrors the builtin `print()`'s own kwarg) so `process_path` can render into
+an `io.StringIO()` *once* and reuse that exact string for both stdout and the saved
+`outputs/` file, rather than rendering twice or re-parsing a written file back out.
+
+**Fixing multi-path support surfaced a latent single-path bug**: `-1` on an empty
+directory (zero `.dcm` files) crashed with an unhandled `ValueError` from
+`min()` on an empty sequence, instead of failing gracefully like every other
+"nothing matched" case. Fixed by checking `list_directory_files()` for emptiness
+before calling `pick_representative_file()` (which now takes the file list
+directly, rather than re-globbing the directory itself). Multiple paths in one
+run make hitting an unexpected edge-case directory (e.g. from a broad shell glob)
+more likely than a single carefully-chosen path ever was, which is why this hadn't
+surfaced before.
+
 ## Known gaps / deliberately deferred
 
 - `summarize_s3_export_folder.py` — its "Gate/phase detail" table is now subsumed
   by `-p -o ScanOptionsGate ScanOptionsPhase` (verified byte-for-byte equivalent
-  counts against real Siemens fixture data). What's *not* yet subsumed: its
-  "Folder summary" table, which runs across *many sibling folders in one
-  invocation* (one row per folder: file count, distinct Study/SeriesUIDs, combo
-  count) — `describe.py` only ever aggregates everything under one given root into
-  a single flat report, with no per-subfolder breakdown. Not yet deleted.
+  counts against real Siemens fixture data). Its "Folder summary" table (one row
+  per sibling folder: file count, distinct Study/SeriesUIDs, combo count, all in
+  one invocation) is *not yet* subsumed as a single comparison table — but
+  `describe.py`'s new multi-path support (`nargs="+"` + always-saved `outputs/`
+  files) is explicitly the first step toward making that comparison easy to build
+  (e.g. a follow-up script reading the per-path `outputs/*.txt` files), not the
+  comparison table itself. Not yet deleted.
 - `--pseudotags`' Siemens gate/phase split doesn't have a GE equivalent yet (GE's
   cardiac phase lives in private CT Cardiac Sequence fields, group 0049 — already
   cataloged in `taglists/cardiac_phase.yaml`, just not turned into a pseudotag).

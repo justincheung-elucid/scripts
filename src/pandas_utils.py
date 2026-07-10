@@ -22,7 +22,7 @@ def _dict_sort_key(key: str):
         return (0, tuple(parsed))
     return (1, key)
 
-def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = True):
+def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = True, file=None):
     # to_string() won't cooperate: it ignores the global display.max_colwidth option
     # (unlike print(df), which uses __repr__), its `justify` option only affects
     # headers, and object-dtype columns get a leading space baked in by its internal
@@ -69,7 +69,7 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = Tr
     if not pretty:
         header = index_name.ljust(index_width)
         header += "".join("  " + str(col).ljust(col_widths[col]) for col in columns)
-        print(header.rstrip())
+        print(header.rstrip(), file=file)
         for row_idx in range(len(df)):
             row = line_at(index_lines[row_idx], 0).ljust(index_width)
             row += "".join(
@@ -79,7 +79,7 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = Tr
             # Padding out to the last column's global width is often mostly
             # whitespace for any given row -- trailing it here avoids wrapping to
             # a blank-looking continuation line in terminals narrower than that.
-            print(row.rstrip())
+            print(row.rstrip(), file=file)
         return
 
     widths = [index_width] + [col_widths[col] for col in columns]
@@ -90,13 +90,13 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = Tr
     def box_row(cells: list[str]) -> str:
         return "| " + " | ".join(c.ljust(w) for c, w in zip(cells, widths)) + " |"
 
-    print(border())
-    print(box_row([index_name] + [str(col) for col in columns]))
-    print(border())
+    print(border(), file=file)
+    print(box_row([index_name] + [str(col) for col in columns]), file=file)
+    print(border(), file=file)
     for row_idx in range(len(df)):
         for line_idx in range(row_heights[row_idx]):
             cells = [line_at(index_lines[row_idx], line_idx)] + [
                 line_at(col_lines[col][row_idx], line_idx) for col in columns
             ]
-            print(box_row(cells))
-        print(border())
+            print(box_row(cells), file=file)
+        print(border(), file=file)
