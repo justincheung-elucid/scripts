@@ -30,6 +30,7 @@ src/
   pydicom_utils.py        # tag parsing/formatting, private-tag name resolution
   pandas_utils.py         # print_df_custom: the custom table renderer
   pseudotags.py           # derived "pseudotags" (currently: Siemens ScanOptions split)
+  combos.py               # -o/--combos: unique cross-tag value combinations
   tqdmcustom.py           # dependency-free progress-bar fallback
 taglists/                 # YAML tag lists consumed by describe.py's -f flag
 deps/3p/dicom3tools/      # git submodule — vendor private-tag dictionaries (see below)
@@ -41,7 +42,7 @@ summarize_s3_export_folder.py  # superseded by `describe.py -p` (Siemens ScanOpt
 ## `describe.py` usage
 
 ```
-describe.py FILEPATH_IN [-n] [-e] [-f FILE_OR_TAG ...] [-u] [-s] [-p] [-1] [-w N] [-c]
+describe.py FILEPATH_IN [-n] [-e] [-f FILE_OR_TAG ...] [-u] [-s] [-p] [-1] [-w N] [-c] [-o TAG TAG ...]
 ```
 
 `FILEPATH_IN` is either a single DICOM file or a directory:
@@ -80,10 +81,18 @@ Flags:
 - `-w`/`--max-colwidth N` (default 100): truncate cell values to N chars.
 - `-c`/`--compact`: pretty-printing (box-drawn table, JSON-indented dict cells) is
   the *default*; this opts back into the old flat/whitespace-aligned rendering.
-
-`--combos` (cross-tag pairing discovery, as opposed to `-p`'s single-tag splitting)
-was discussed but deliberately **not implemented** — still undecided whether it's
-worth the complexity.
+- `-o`/`--combos TAG TAG ...`: 2+ tags (real tags and/or pseudotag names, same
+  flexible parsing as `-f`) to find the unique *joint* combinations of values for,
+  across files in directory mode. Produces one extra row, `tag` =
+  `COMBO(label1,label2,...)`, `value` = `{str(value_tuple): file_count}` — the same
+  shape as an ordinary aggregated row, so it flows through `-n`/`-e`/`-u`/`-s`/
+  pretty-printing with no special-casing. Repeatable for independent combo groups.
+  This is `summarize_s3_export_folder.py`'s "Gate/phase detail" table, generalized
+  to any pair (or n-tuple) of tags. If a group references a pseudotag name, `-p`
+  must also be passed or that slot is always `None` (no implicit auto-enabling).
+  A referenced *real* tag not otherwise covered by `-f` gets unioned into the
+  filtered set automatically (see below), so you don't have to redundantly list it
+  in both places.
 
 ## Non-obvious design decisions
 
@@ -161,11 +170,33 @@ dict)`** to generalize single-file semantics ("value is None") to directory-mode
 aggregated counts ("every file agrees the value is None"), so the same `-n`/`-e`
 flags work correctly in both modes without duplicated logic.
 
+**`--combos` needed per-file values retained separately from the per-tag
+Counters, because by the time the aggregated `{tag: {value: count}}` rows exist,
+the information needed to reconstruct which *values of different tags* co-occurred
+within the same file is already gone** — each tag's Counter is built independently.
+`build_rows_for_directory` keeps a second structure, `file_values_by_tag` (`{tag
+label: {file_path: raw_value}}`), populated *only* for tags actually referenced by
+`--combos` (to avoid retaining this for every tag needlessly). `compute_combo_rows`
+(`src/combos.py`) then joins across those per-tag dicts by file key to build the
+`{value_tuple: count}` distribution once, after all files are processed — not
+per-file. The tempting shortcut of "just emit a per-file combo row and let the
+normal aggregation loop count it" does *not* work: each file's combo value would
+already be a `{tuple: 1}` dict, and the generic aggregator would end up counting
+occurrences of *that stringified single-entry dict* rather than merging the
+underlying tuples — verified this fails before settling on the two-structure design.
+Single-file and `-1` mode reuse the exact same `compute_combo_rows` via
+`append_single_snapshot_combos`, just with one synthetic "file" key — no separate
+code path needed.
+
 ## Known gaps / deliberately deferred
 
-- `--combos` (cross-tag pairing discovery) — discussed, not implemented.
-- `summarize_s3_export_folder.py` — superseded by `-p`'s Siemens ScanOptions split,
-  but not yet deleted.
+- `summarize_s3_export_folder.py` — its "Gate/phase detail" table is now subsumed
+  by `-p -o ScanOptionsGate ScanOptionsPhase` (verified byte-for-byte equivalent
+  counts against real Siemens fixture data). What's *not* yet subsumed: its
+  "Folder summary" table, which runs across *many sibling folders in one
+  invocation* (one row per folder: file count, distinct Study/SeriesUIDs, combo
+  count) — `describe.py` only ever aggregates everything under one given root into
+  a single flat report, with no per-subfolder breakdown. Not yet deleted.
 - `--pseudotags`' Siemens gate/phase split doesn't have a GE equivalent yet (GE's
   cardiac phase lives in private CT Cardiac Sequence fields, group 0049 — already
   cataloged in `taglists/cardiac_phase.yaml`, just not turned into a pseudotag).

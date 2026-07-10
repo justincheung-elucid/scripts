@@ -21,6 +21,7 @@ from src.pydicom_utils import (
 )
 from src.pandas_utils import print_df_custom
 from src.pseudotags import compute_pseudotags
+from src.combos import combo_real_tags, combo_tag_label, compute_combo_rows
 from src.tqdmcustom import tqdm as tqdm
 
 # ===== CLI =========================================
@@ -104,22 +105,43 @@ def parse_args():
             "repr instead of JSON-style indentation"
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "-o",
+        "--combos",
+        action="append",
+        nargs="+",
+        metavar="TAG",
+        help=(
+            "2+ tags (real tags or pseudotag names, same flexible format as "
+            "--filters) to find the unique combinations of values for, across "
+            "files in directory mode. May be given multiple times for independent "
+            "combo groups. If a group references a pseudotag name, -p must also "
+            "be given or that slot will just be None."
+        ),
+    )
+    args = parser.parse_args()
+    for group in args.combos or []:
+        if len(group) < 2:
+            parser.error(f"--combos requires at least 2 tags per group, got: {group}")
+    return args
 
 # ===== CORE IMPLEMENTATION =========================
 def main(args: argparse.Namespace):
     path = Path(args.filepath_in)
     picked_file = None
     is_directory_aggregate = path.is_dir() and not args.one
+    combo_groups = args.combos or []
 
     if path.is_dir():
         if args.one:
             picked_file = pick_representative_file(path)
-            rows = build_rows(read_dataset(picked_file), args.filters, args.pseudotags)
+            rows = build_rows(read_dataset(picked_file), args.filters, args.pseudotags, combo_groups)
+            rows = append_single_snapshot_combos(rows, combo_groups)
         else:
-            rows = build_rows_for_directory(path, args.filters, args.pseudotags)
+            rows = build_rows_for_directory(path, args.filters, args.pseudotags, combo_groups)
     else:
-        rows = build_rows(read_dataset(path), args.filters, args.pseudotags)
+        rows = build_rows(read_dataset(path), args.filters, args.pseudotags, combo_groups)
+        rows = append_single_snapshot_combos(rows, combo_groups)
 
     if args.hide_null:
         rows = [row for row in rows if not row_is_all(row, None)]
@@ -180,17 +202,38 @@ def row_is_scattered(row: dict) -> bool:
     return isinstance(value, dict) and value and all(count == 1 for count in value.values())
 
 def build_rows(
-    ds: pydicom.Dataset, filter_paths: list[str] | None, pseudotags: bool = False
+    ds: pydicom.Dataset,
+    filter_paths: list[str] | None,
+    pseudotags: bool = False,
+    combo_groups: list[list[str]] | None = None,
 ) -> list[dict]:
     context = NameContext(ds)
     if filter_paths:
         elements = index_elements(ds)
-        rows = [build_row(context, tag, elements.get(tag)) for tag in load_filters(filter_paths)]
+        tags = load_filters(filter_paths)
+        if combo_groups:
+            # A --combos tag not covered by --filters would otherwise silently
+            # never get computed, making that combo slot always None.
+            seen = set(tags)
+            for tag in combo_real_tags(combo_groups):
+                if tag not in seen:
+                    seen.add(tag)
+                    tags.append(tag)
+        rows = [build_row(context, tag, elements.get(tag)) for tag in tags]
     else:
         rows = [build_row(context, elem.tag, elem) for elem in ds.iterall()]
     if pseudotags:
         rows += compute_pseudotags(ds)
     return rows
+
+def append_single_snapshot_combos(rows: list[dict], combo_groups: list[list[str]]) -> list[dict]:
+    """--combos for a single dataset (plain file, or -1's representative file) --
+    trivially one "file" per combo, but reuses the same directory-mode machinery
+    for consistent rendering."""
+    if not combo_groups:
+        return rows
+    file_values_by_tag = {row["tag"]: {0: row["value"]} for row in rows}
+    return rows + compute_combo_rows(combo_groups, file_values_by_tag)
 
 def build_row(
     context: NameContext, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None
@@ -207,15 +250,33 @@ def build_row(
         ),
     }
 
-def _build_rows_for_file(filepath: Path, filter_paths: list[str] | None, pseudotags: bool) -> list[dict]:
-    return build_rows(read_dataset(filepath), filter_paths, pseudotags)
+def _build_rows_for_file(
+    filepath: Path,
+    filter_paths: list[str] | None,
+    pseudotags: bool,
+    combo_groups: list[list[str]] | None,
+) -> list[dict]:
+    # Note: combo_groups is passed through only so build_rows() unions the right
+    # tags into this file's own filtered set -- the actual cross-file combo
+    # counting happens once in build_rows_for_directory below, not per file.
+    return build_rows(read_dataset(filepath), filter_paths, pseudotags, combo_groups)
 
 def build_rows_for_directory(
-    directory: Path, filter_paths: list[str] | None, pseudotags: bool = False
+    directory: Path,
+    filter_paths: list[str] | None,
+    pseudotags: bool = False,
+    combo_groups: list[list[str]] | None = None,
 ) -> list[dict]:
+    combo_groups = combo_groups or []
+    combo_labels = {combo_tag_label(raw) for group in combo_groups for raw in group}
+
     tag_order: list[str] = []
     first_seen_row: dict[str, dict] = {}
     value_counts_by_tag: dict[str, Counter] = {}
+    # Per-file raw values, retained only for tags referenced by --combos -- the
+    # per-tag Counters below throw away which values co-occurred within the same
+    # file, which is exactly what compute_combo_rows needs reconstructed afterward.
+    file_values_by_tag: dict[str, dict[str, object]] = {label: {} for label in combo_labels}
 
     files = list_directory_files(directory)
     # Each file's parsing is independent until this aggregation step, and is the
@@ -226,21 +287,30 @@ def build_rows_for_directory(
     print(f"Using {max_workers} process(es)", file=sys.stderr)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         per_file_rows = executor.map(
-            _build_rows_for_file, files, [filter_paths] * len(files), [pseudotags] * len(files)
+            _build_rows_for_file,
+            files,
+            [filter_paths] * len(files),
+            [pseudotags] * len(files),
+            [combo_groups] * len(files),
         )
-        for rows in tqdm(per_file_rows, total=len(files), desc="Reading files"):
+        for filepath, rows in tqdm(zip(files, per_file_rows), total=len(files), desc="Reading files"):
+            file_key = str(filepath)
             for row in rows:
                 tag = row["tag"]
+                if tag in file_values_by_tag:
+                    file_values_by_tag[tag][file_key] = row["value"]
                 if tag not in first_seen_row:
                     tag_order.append(tag)
                     first_seen_row[tag] = row
                     value_counts_by_tag[tag] = Counter()
                 value_counts_by_tag[tag][str(row["value"])] += 1
 
-    return [
+    aggregated = [
         {**first_seen_row[tag], "value": dict(value_counts_by_tag[tag])}
         for tag in tag_order
     ]
+    aggregated += compute_combo_rows(combo_groups, file_values_by_tag)
+    return aggregated
 
 def load_filters(entries: list[str]) -> list[pydicom.tag.BaseTag]:
     tags: list[pydicom.tag.BaseTag] = []
