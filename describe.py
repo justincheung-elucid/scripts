@@ -13,6 +13,7 @@ import yaml
 
 from src.pydicom_utils import tag_to_string, describe_name, index_elements, format_sequence_value, NameContext
 from src.pandas_utils import print_df_custom
+from src.pseudotags import compute_pseudotags
 from src.tqdmcustom import tqdm as tqdm
 
 # ===== CLI =========================================
@@ -58,6 +59,16 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "-p",
+        "--pseudotags",
+        action="store_true",
+        help=(
+            "Add rows for derived 'pseudotags' that split a single tag's compound "
+            "value into more directly meaningful sub-fields (currently: Siemens "
+            "ScanOptions -> gate/phase)"
+        ),
+    )
+    parser.add_argument(
         "-1",
         "--one",
         action="store_true",
@@ -76,11 +87,11 @@ def main(args: argparse.Namespace):
     if path.is_dir():
         if args.one:
             picked_file = pick_representative_file(path)
-            rows = build_rows(read_dataset(picked_file), args.filters)
+            rows = build_rows(read_dataset(picked_file), args.filters, args.pseudotags)
         else:
-            rows = build_rows_for_directory(path, args.filters)
+            rows = build_rows_for_directory(path, args.filters, args.pseudotags)
     else:
-        rows = build_rows(read_dataset(path), args.filters)
+        rows = build_rows(read_dataset(path), args.filters, args.pseudotags)
 
     if args.hide_null:
         rows = [row for row in rows if not row_is_all(row, None)]
@@ -132,14 +143,18 @@ def row_is_scattered(row: dict) -> bool:
     value = row["value"]
     return isinstance(value, dict) and value and all(count == 1 for count in value.values())
 
-def build_rows(ds: pydicom.Dataset, filter_paths: list[str] | None) -> list[dict]:
+def build_rows(
+    ds: pydicom.Dataset, filter_paths: list[str] | None, pseudotags: bool = False
+) -> list[dict]:
     context = NameContext(ds)
     if filter_paths:
         elements = index_elements(ds)
-        return [
-            build_row(context, tag, elements.get(tag)) for tag in load_filters(filter_paths)
-        ]
-    return [build_row(context, elem.tag, elem) for elem in ds.iterall()]
+        rows = [build_row(context, tag, elements.get(tag)) for tag in load_filters(filter_paths)]
+    else:
+        rows = [build_row(context, elem.tag, elem) for elem in ds.iterall()]
+    if pseudotags:
+        rows += compute_pseudotags(ds)
+    return rows
 
 def build_row(
     context: NameContext, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None
@@ -156,10 +171,12 @@ def build_row(
         ),
     }
 
-def _build_rows_for_file(filepath: Path, filter_paths: list[str] | None) -> list[dict]:
-    return build_rows(read_dataset(filepath), filter_paths)
+def _build_rows_for_file(filepath: Path, filter_paths: list[str] | None, pseudotags: bool) -> list[dict]:
+    return build_rows(read_dataset(filepath), filter_paths, pseudotags)
 
-def build_rows_for_directory(directory: Path, filter_paths: list[str] | None) -> list[dict]:
+def build_rows_for_directory(
+    directory: Path, filter_paths: list[str] | None, pseudotags: bool = False
+) -> list[dict]:
     tag_order: list[str] = []
     first_seen_row: dict[str, dict] = {}
     value_counts_by_tag: dict[str, Counter] = {}
@@ -172,7 +189,9 @@ def build_rows_for_directory(directory: Path, filter_paths: list[str] | None) ->
     max_workers = max(1, (os.cpu_count() or 1) // 2)
     print(f"Using {max_workers} process(es)", file=sys.stderr)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        per_file_rows = executor.map(_build_rows_for_file, files, [filter_paths] * len(files))
+        per_file_rows = executor.map(
+            _build_rows_for_file, files, [filter_paths] * len(files), [pseudotags] * len(files)
+        )
         for rows in tqdm(per_file_rows, total=len(files), desc="Reading files"):
             for row in rows:
                 tag = row["tag"]
