@@ -77,6 +77,23 @@ def parse_args():
             "it (rather than aggregating over all of them) and print that file's path"
         ),
     )
+    parser.add_argument(
+        "-w",
+        "--max-colwidth",
+        type=int,
+        default=100,
+        help="Truncate printed cell values to this many characters (default: 100)",
+    )
+    parser.add_argument(
+        "-d",
+        "--pretty",
+        action="store_true",
+        help=(
+            "Pretty-print: box-draw horizontal/vertical dividers between rows and "
+            "columns, and render dict-valued cells (e.g. directory-mode value "
+            "counts) with JSON-style indentation instead of a flat repr"
+        ),
+    )
     return parser.parse_args()
 
 # ===== CORE IMPLEMENTATION =========================
@@ -107,7 +124,7 @@ def main(args: argparse.Namespace):
         sys.exit(1)
 
     df = pd.DataFrame(rows).set_index("tag")
-    print_df_custom(df)
+    print_df_custom(df, max_colwidth=args.max_colwidth, pretty=args.pretty)
 
     if picked_file is not None:
         print(picked_file.resolve())
