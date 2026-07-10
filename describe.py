@@ -24,7 +24,6 @@ from src.pydicom_utils import (
 from src.pandas_utils import print_df_custom
 from src.pseudotags import compute_pseudotags
 from src.combos import combo_real_tags, combo_tag_label, compute_combo_rows
-from src.tqdmcustom import tqdm as tqdm
 
 # ===== CLI =========================================
 def parse_args():
@@ -196,12 +195,10 @@ def process_path(path: Path, args: argparse.Namespace) -> bool:
         print(picked_file.resolve(), file=buf)
     output_text = buf.getvalue()
 
-    print(output_text, end="")
-
     output_file = output_path_for(path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(output_text)
-    print(f"Wrote {output_file}", file=sys.stderr)
+    print(f"Wrote {output_file}")
     return True
 
 # ===== DETAILED IMPLEMENTATION =====================
@@ -323,7 +320,6 @@ def build_rows_for_directory(
     # Capped at half the available CPUs to leave headroom for other work on the
     # machine while this runs.
     max_workers = max(1, (os.cpu_count() or 1) // 2)
-    print(f"Using {max_workers} process(es)", file=sys.stderr)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         per_file_rows = executor.map(
             _build_rows_for_file,
@@ -332,7 +328,7 @@ def build_rows_for_directory(
             [pseudotags] * len(files),
             [combo_groups] * len(files),
         )
-        for filepath, rows in tqdm(zip(files, per_file_rows), total=len(files), desc="Reading files"):
+        for filepath, rows in zip(files, per_file_rows):
             file_key = str(filepath)
             for row in rows:
                 tag = row["tag"]

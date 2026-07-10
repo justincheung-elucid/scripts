@@ -57,11 +57,16 @@ rather than aborting the whole batch; the process exits 1 only if *every* path
 failed.
 
 Every path's rendered table is **always written to `outputs/`** (relative to
-`describe.py`'s own location, not the caller's cwd — created if needed, gitignored)
-in addition to being printed to stdout, named after a sanitized version of that
-path's resolved absolute path (`sanitize_path_for_filename` — non `[A-Za-z0-9._-]`
-runs become `_`), e.g. `~/data/foo/series_002` → `outputs/home_user_data_foo_series_002.txt`.
-This has no toggle yet (always on).
+`describe.py`'s own location, not the caller's cwd — created if needed, gitignored),
+named after a sanitized version of that path's resolved absolute path
+(`sanitize_path_for_filename` — non `[A-Za-z0-9._-]` runs become `_`), e.g.
+`~/data/foo/series_002` → `outputs/home_user_data_foo_series_002.txt`. This has no
+toggle yet (always on). The table itself is *not* printed to stdout — only a
+`Wrote <path>` pointer per input path — by explicit preference: the old
+per-file `tqdm`-style progress bar was removed for the same reason (its `\r`-driven
+updates look like garbage wherever `\r` doesn't mean "overwrite in place," e.g.
+piped/redirected output), and once you're always pointed at a saved file, dumping
+the whole table to the terminal too is just noise on top of noise.
 
 For a single path, `FILEPATH_IN` is either a single DICOM file or a directory:
 - **File**: prints one row per tag (tag, name, VR, VM, value).
@@ -146,12 +151,21 @@ is marked with a trailing `?` so it's visually distinguishable.
 **Column widths, box-drawing, and JSON pretty-printing all had to solve the same
 underlying problem**: a single outlier cell shouldn't force every other row in that
 column to carry huge trailing padding (this caused a real "big blank gaps between
-rows" bug when terminals soft-wrapped the wasted whitespace). `print_df_custom`
-rstrips every printed line, and computes cell content as *lists of lines* (not
-single strings) so a JSON-indented dict value can span multiple physical rows while
-other columns render blank on the continuation lines — this is also what makes the
-box-drawn "pretty" mode's per-row divider placement correct (one divider per
-*logical* row, not per physical line).
+rows" bug when terminals soft-wrapped the wasted whitespace, and later, once
+`outputs/` made every run write a file, a large chunk of that file's size).
+`print_df_custom` computes cell content as *lists of lines* (not single strings) so
+a JSON-indented dict value can span multiple physical rows while other columns
+render blank on the continuation lines — this is also what makes the box-drawn
+"pretty" mode's per-row divider placement correct (one divider per *logical* row,
+not per physical line). Compact mode rstrips every line (cheap, since it's not
+boxed). Pretty mode goes further for the **last** column specifically (`value`/
+`value counts (...)`, always the one with genuinely unbounded content — JSON dumps,
+long UIDs): its border/header segment is sized to the *header text only*, not the
+widest cell, and data rows print that column's content raw and unbounded, with no
+padding and no closing `|` — the box is fully closed (padded, `|`-terminated) for
+the header and border rows, but deliberately left open on data rows. All other
+columns stay fully boxed/padded as normal, since their content is naturally
+short and bounded.
 
 **Dict-valued cells (`{value: file_count}` from directory aggregation) sort by the
 recovered numeric type, not by string.** A tag like `Image Position (Patient)`
@@ -166,17 +180,22 @@ string keys are never compared directly) for genuinely non-numeric values. The
 capped.** Parsing DICOM files with pydicom is CPU-bound Python, so
 `ThreadPoolExecutor` would've been serialized by the GIL — `ProcessPoolExecutor` is
 used instead, each worker with its own interpreter/GIL. Capped at
-`os.cpu_count() // 2` (not the full core count) to leave headroom on the machine;
-the worker count is printed to stderr. The per-file worker function
-(`_build_rows_for_file`) has to return plain picklable dicts (not e.g. a live
-`pydicom.Dataset`) since everything crossing the process boundary gets pickled.
+`os.cpu_count() // 2` (not the full core count) to leave headroom on the machine.
+The per-file worker function (`_build_rows_for_file`) has to return plain picklable
+dicts (not e.g. a live `pydicom.Dataset`) since everything crossing the process
+boundary gets pickled. No progress bar is printed during this (see below).
 
-**Progress bar prints to stderr on purpose**, matching real `tqdm`'s own default —
-this is *why* `describe.py ... > output.txt` cleanly separates the progress bar
-(stays on your terminal) from the actual table (goes to the file): stdout and
-stderr are independent streams, and `>` only redirects stdout. `tqdmcustom.py`
-provides a dependency-free fallback (used automatically if `tqdm` isn't installed,
-which it currently isn't in the shared venv) with the same stderr convention.
+**`tqdmcustom.py` exists but `describe.py` no longer uses it.** It was originally
+wired into `build_rows_for_directory` as a dependency-free `tqdm` fallback, printed
+to stderr specifically so it wouldn't pollute `describe.py ... > output.txt`
+(stdout and stderr are independent streams; `>` only redirects stdout). Once
+`outputs/` became the always-on default destination (see above), the progress
+bar's `\r`-driven updates turned out to look like garbage in contexts where `\r`
+isn't interpreted as "overwrite in place" (piped output, some terminal/log
+captures) — removed by explicit preference in favor of just printing `Wrote
+<path>` per input path once it's done. The module itself is kept since it was
+factored out specifically to be reusable elsewhere, even though this script no
+longer imports it.
 
 **`NameContext` exists purely for performance.** Profiling a slow directory run
 showed `describe_name()` was recomputing `ds.get("Manufacturer")` and each private

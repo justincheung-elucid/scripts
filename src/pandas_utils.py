@@ -82,21 +82,29 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = Tr
             print(row.rstrip(), file=file)
         return
 
-    widths = [index_width] + [col_widths[col] for col in columns]
+    # The last column (value/value-counts) is where huge cells live (JSON-dumped
+    # dicts, long UIDs) -- boxing it in like the others would mean padding every
+    # short cell out to the widest one's width just to close the row with a "|",
+    # which is most of a large output file's size. Instead, size the border/header
+    # for that column to its header text only, and let data rows print its content
+    # raw and unbounded on the right, with no padding or closing bar.
+    widths = [index_width] + [col_widths[col] for col in columns[:-1]]
+    last_header = str(columns[-1])
 
     def border() -> str:
-        return "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+        return "+" + "+".join("-" * (w + 2) for w in widths) + "+" + "-" * (len(last_header) + 2) + "+"
 
-    def box_row(cells: list[str]) -> str:
-        return "| " + " | ".join(c.ljust(w) for c, w in zip(cells, widths)) + " |"
+    def row_line(cells: list[str]) -> str:
+        prefix = "| " + " | ".join(c.ljust(w) for c, w in zip(cells[:-1], widths)) + " | "
+        return prefix + cells[-1]
 
     print(border(), file=file)
-    print(box_row([index_name] + [str(col) for col in columns]), file=file)
+    print(row_line([index_name] + [str(col) for col in columns]), file=file)
     print(border(), file=file)
     for row_idx in range(len(df)):
         for line_idx in range(row_heights[row_idx]):
             cells = [line_at(index_lines[row_idx], line_idx)] + [
                 line_at(col_lines[col][row_idx], line_idx) for col in columns
             ]
-            print(box_row(cells), file=file)
+            print(row_line(cells), file=file)
         print(border(), file=file)
