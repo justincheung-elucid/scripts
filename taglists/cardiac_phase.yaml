@@ -1,0 +1,86 @@
+# Every tag we seem aware of related to cardiac phase.
+
+- "0020,9241"  # NominalPercentageOfCardiacPhase
+- "0018,0022"  # ScanOptions
+- "01E1,1020"  # Philips: phase tag
+
+# Canon private tag: cardiac phase as a percentage string (e.g. "80% ")
+- "7005,1004"  # Canon: phase percentage
+# Canon private tag: cardiac phase time offset in ms relative to the R-R interval
+- "7005,1005"  # Canon: phase time (ms)
+# Canon private tag: R-R interval duration in ms, used with the phase-time tag above
+- "7005,1003"  # Canon: R-R interval
+# GE private tag (GEMS_CT_CARDIAC_001 block): PhaseLocation, part of the CT Cardiac
+# Sequence. Only present when the scanner's cardiac option is installed; private
+# creator (0049,0010) must equal "GEMS_CT_CARDIAC_001" for this to be reliable.
+- "0049,1023"  # GE: cardiac phase location
+
+# Standard DICOM Cardiac Synchronization Module/Sequence attributes (PS3.3 C.7.6.18.1
+# for the legacy single-frame tags; the Enhanced CT/MR multi-frame Cardiac
+# Synchronization Sequence (0018,9118) for the rest).
+- "0018,1060"  # TriggerTime
+# Retired; from the NM Multi-gated Acquisition Module (PS3.3 C.8.4.13) -- average
+# duration of accepted beats, in msec (the vendor-neutral "R-R interval" value).
+- "0018,1062"  # NominalInterval
+- "0018,1063"  # FrameTime
+# Cardiac Synchronization Module; defined term PCNT = "percentage of R-R forward
+# from trigger", i.e. how to interpret the percent-phase tag below.
+- "0018,1064"  # CardiacFramingType
+- "0018,1081"  # LowRRValue
+- "0018,1082"  # HighRRValue
+- "0018,1083"  # IntervalsAcquired
+- "0018,1084"  # IntervalsRejected
+- "0018,1088"  # HeartRate
+- "0018,9037"  # CardiacSynchronizationTechnique
+- "0018,9070"  # CardiacRRIntervalSpecified
+- "0018,9118"  # CardiacSynchronizationSequence
+# Frame Content Sequence; "description of the position in the cardiac cycle
+# that is most representative of this frame" -- the most literal vendor-neutral
+# "which phase" descriptor.
+- "0018,9236"  # CardiacCyclePosition
+# Formally scoped to PET dynamic/fMRI use cases, but conceptually an ordinal
+# phase/frame index -- borrowed-usage candidate like (0020,9241).
+- "0020,9128"  # TemporalPositionIndex
+- "0020,9153"  # NominalCardiacTriggerDelayTime
+- "0020,9154"  # NominalCardiacTriggerTimePriorToRPeak
+- "0020,9155"  # ActualCardiacTriggerTimePriorToRPeak
+- "0020,9251"  # RRIntervalTimeNominal
+- "0020,9252"  # ActualCardiacTriggerDelayTime
+
+# Standard DICOM NM (Nuclear Medicine) Multi-frame Module gating attributes
+# (PS3.3 C.8.4.8). Formally scoped to NM gated acquisitions; presence on a CT
+# image would be a borrowed/non-conformant usage, same pattern as (0020,9241).
+- "0054,0030"  # PhaseVector
+- "0054,0031"  # NumberOfPhases
+- "0054,0060"  # RRIntervalVector
+- "0054,0061"  # NumberOfRRIntervals
+# Time Slot = which phase-bin of the averaged heartbeat, as opposed to R-R
+# Interval above (which beat-duration bucket, e.g. normal vs. ectopic). Likely
+# the closer conceptual match for "which gate" / "total gates".
+- "0054,0070"  # TimeSlotVector
+- "0054,0071"  # NumberOfTimeSlots
+
+# GE private tags (GEMS_HELIOS_01 block, group 0045) -- cardiac recon parameters.
+- "0045,1030"  # CardiacReconAlgorithm
+- "0045,1031"  # AvgHeartRateForImage
+- "0045,1032"  # TemporalResolution
+- "0045,1033"  # PctRpeakDelay
+- "0045,1034"  # ActualPctRpeakDelay
+- "0045,1036"  # EkgFullMaStartPhase
+- "0045,1037"  # EkgFullMaEndPhase
+- "0045,1038"  # EkgModulationMaxMa
+- "0045,1039"  # EkgModulationMinMa
+- "0045,103B"  # NoiseReductionImageFilterDesc
+- "0045,103F"  # RPeakTimeDelay
+- "0045,1044"  # ActualRPeakTimeDelay
+- "0045,1045"  # CardiacScanOptions
+
+# GE private tags (GEMS_CT_CARDIAC_001 block, group 0049) -- CT Cardiac Sequence.
+- "0049,1002"  # HeartRateAtConfirm
+- "0049,1003"  # AvgHeartRatePriorToConfirm
+- "0049,1004"  # MinHeartRatePriorToConfirm
+- "0049,1005"  # MaxHeartRatePriorToConfirm
+- "0049,100B"  # NumReconSectors
+- "0049,100C"  # RpeakTimeStamps
+- "0049,1016"  # EkgGatingType
+- "0049,101B"  # EkgWaveTimeOffFirstDataPoint

@@ -33,8 +33,24 @@ def parse_args():
         nargs="+",
         metavar="FILE",
         help=(
-            "One or more YAML files mapping names to tags (e.g. MyTag: \"0020,000D\") "
-            "to restrict output to. The printed tags are the union across all given files."
+            "One or more YAML files, each a list of tags (e.g. \"0020,000D\") to "
+            "restrict output to. Names are still auto-resolved, same as unfiltered "
+            "output. The printed tags are the union across all given files."
+        ),
+    )
+    parser.add_argument(
+        "-u",
+        "--hide-uniform",
+        action="store_true",
+        help="Directory mode: hide tags whose value is the same across every file",
+    )
+    parser.add_argument(
+        "-s",
+        "--hide-scattered",
+        action="store_true",
+        help=(
+            "Directory mode: hide tags where no two files share a value "
+            "(every file's value is unique)"
         ),
     )
     parser.add_argument(
@@ -66,6 +82,10 @@ def main(args: argparse.Namespace):
         rows = [row for row in rows if not row_is_all(row, None)]
     if args.hide_empty:
         rows = [row for row in rows if not row_is_all(row, "")]
+    if args.hide_uniform:
+        rows = [row for row in rows if not row_is_uniform(row)]
+    if args.hide_scattered:
+        rows = [row for row in rows if not row_is_scattered(row)]
 
     df = pd.DataFrame(rows).set_index("tag")
     print_df_custom(df)
@@ -78,7 +98,7 @@ def read_dataset(filepath: Path) -> pydicom.Dataset:
     return pydicom.dcmread(filepath, stop_before_pixels=True)
 
 def list_directory_files(directory: Path) -> list[Path]:
-    return sorted(p for p in directory.iterdir() if p.is_file())
+    return sorted(p for p in directory.rglob("*.dcm") if p.is_file())
 
 def pick_representative_file(directory: Path) -> Path:
     # Abstracted so the selection strategy can be swapped later. Currently: oldest
@@ -94,18 +114,25 @@ def row_is_all(row: dict, sentinel) -> bool:
         return set(value) == {str(sentinel)}
     return value == sentinel
 
+def row_is_uniform(row: dict) -> bool:
+    """True if every file agrees on this tag's value. No-op outside directory mode."""
+    value = row["value"]
+    return isinstance(value, dict) and len(value) == 1
+
+def row_is_scattered(row: dict) -> bool:
+    """True if no two files share this tag's value. No-op outside directory mode."""
+    value = row["value"]
+    return isinstance(value, dict) and value and all(count == 1 for count in value.values())
+
 def build_rows(ds: pydicom.Dataset, filter_paths: list[str] | None) -> list[dict]:
     if filter_paths:
-        return [
-            build_row(tag, name, find_element(ds, tag))
-            for tag, name in load_filters(filter_paths).items()
-        ]
-    return [build_row(elem.tag, describe_name(ds, elem), elem) for elem in ds.iterall()]
+        return [build_row(ds, tag, find_element(ds, tag)) for tag in load_filters(filter_paths)]
+    return [build_row(ds, elem.tag, elem) for elem in ds.iterall()]
 
-def build_row(tag: pydicom.tag.BaseTag, name: str, elem: pydicom.DataElement | None) -> dict:
+def build_row(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None) -> dict:
     return {
         "tag": tag_to_string(tag),
-        "name": name,
+        "name": describe_name(ds, tag, elem),
         "VR": elem.VR if elem else None,
         "VM": elem.VM if elem else None,
         "value": (
@@ -134,15 +161,19 @@ def build_rows_for_directory(directory: Path, filter_paths: list[str] | None) ->
         for tag in tag_order
     ]
 
-def load_filters(paths: list[str]) -> dict[pydicom.tag.BaseTag, str]:
-    tag_names: dict[pydicom.tag.BaseTag, str] = {}
+def load_filters(paths: list[str]) -> list[pydicom.tag.BaseTag]:
+    tags: list[pydicom.tag.BaseTag] = []
+    seen: set[pydicom.tag.BaseTag] = set()
     for path in paths:
         with open(path) as f:
-            filter_config = yaml.safe_load(f) or {}
-        for name, tag_str in filter_config.items():
+            tag_strs = yaml.safe_load(f) or []
+        for tag_str in tag_strs:
             group, element = tag_str.split(",")
-            tag_names[pydicom.tag.Tag(int(group, 16), int(element, 16))] = name
-    return tag_names
+            tag = pydicom.tag.Tag(int(group, 16), int(element, 16))
+            if tag not in seen:
+                seen.add(tag)
+                tags.append(tag)
+    return tags
 
 # ===== BOILERPLATE =================================
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pydicom
+from pydicom.datadict import dictionary_description
 
 # dicom3tools (David Clunie's private DICOM tag dictionaries, vendored as a git
 # submodule) is the source of truth for private tag names here -- it's far more
@@ -109,33 +110,48 @@ def _manufacturer_tpl_file(ds: pydicom.Dataset) -> str | None:
             return filename
     return None
 
-def describe_name(ds: pydicom.Dataset, elem: pydicom.DataElement) -> str:
-    tag = elem.tag
+def _tag_only_name(tag: pydicom.tag.BaseTag) -> str:
+    # Mirrors what pydicom's own elem.name falls back to, but works from a bare
+    # tag -- needed to resolve names for tags that aren't actually present in ds
+    # (e.g. when driven by a --filters tag list rather than iterating the file).
+    if tag.is_private_creator:
+        return "Private Creator"
+    try:
+        return dictionary_description(tag)
+    except KeyError:
+        return "Private tag data" if tag.is_private else "Unknown"
+
+def describe_name(
+    ds: pydicom.Dataset, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None = None
+) -> str:
     tpl_file = _manufacturer_tpl_file(ds)
+    fallback = _tag_only_name(tag)
 
     if tag.is_private_creator:
-        # The creator element itself; when blanked (e.g. by de-identification),
-        # show what we'd otherwise assume it to be so it's clear what's guessed.
+        # The creator element itself; when blanked (e.g. by de-identification) or
+        # absent, show what we'd otherwise assume it to be so it's clear what's
+        # guessed.
         guess = tpl_file and GE_LEGACY_PRIVATE_CREATORS.get(tag.group)
-        if not elem.value and guess:
-            return f"{elem.name} [{guess}?]"
-        return elem.name
+        actual_value = elem.value if elem is not None else None
+        if not actual_value and guess:
+            return f"{fallback} [{guess}?]"
+        return fallback
     if not tag.is_private:
-        return elem.name
+        return fallback
 
     if tpl_file is None:
-        return elem.name
+        return fallback
 
     creator = _actual_private_creator(ds, tag.group)
     guessed = not creator
     if guessed:
         creator = GE_LEGACY_PRIVATE_CREATORS.get(tag.group)
     if not creator:
-        return elem.name
+        return fallback
 
     name = _dicom3tools_name(tpl_file, creator, tag)
     if name is None:
-        return elem.name
+        return fallback
     # Marked with a trailing "?" since this creator is assumed from GE's legacy
     # group convention, not read from the file's own (blanked) Private Creator
     # element -- unlike dicom3tools names resolved from a real declared creator.
