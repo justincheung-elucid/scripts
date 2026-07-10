@@ -1,0 +1,86 @@
+# Every tag we seem aware of related to cardiac phase.
+
+DCM_NominalPercentageOfCardiacPhase: "0020,9241"
+DCM_ScanOptions: "0018,0022"
+EV_PHILLIPS_PHASE_TAG: "01E1,1020"
+
+# Canon private tag: cardiac phase as a percentage string (e.g. "80% ")
+EV_CANON_PHASE_PERCENTAGE_TAG: "7005,1004"
+# Canon private tag: cardiac phase time offset in ms relative to the R-R interval
+EV_CANON_PHASE_TIME_MS_TAG: "7005,1005"
+# Canon private tag: R-R interval duration in ms, used with EV_CANON_PHASE_TIME_MS_TAG
+EV_CANON_RR_INTERVAL_TAG: "7005,1003"
+# GE private tag (GEMS_CT_CARDIAC_001 block): PhaseLocation, part of the CT Cardiac
+# Sequence. Only present when the scanner's cardiac option is installed; private
+# creator (0049,0010) must equal "GEMS_CT_CARDIAC_001" for this to be reliable.
+EV_GE_CARDIAC_PHASE_LOCATION_TAG: "0049,1023"
+
+# Standard DICOM Cardiac Synchronization Module/Sequence attributes (PS3.3 C.7.6.18.1
+# for the legacy single-frame tags; the Enhanced CT/MR multi-frame Cardiac
+# Synchronization Sequence (0018,9118) for the rest).
+DCM_TriggerTime: "0018,1060"
+# Retired; from the NM Multi-gated Acquisition Module (PS3.3 C.8.4.13) -- average
+# duration of accepted beats, in msec (the vendor-neutral "R-R interval" value).
+DCM_NominalInterval: "0018,1062"
+DCM_FrameTime: "0018,1063"
+# Cardiac Synchronization Module; defined term PCNT = "percentage of R-R forward
+# from trigger", i.e. how to interpret the percent-phase tag below.
+DCM_CardiacFramingType: "0018,1064"
+DCM_LowRRValue: "0018,1081"
+DCM_HighRRValue: "0018,1082"
+DCM_IntervalsAcquired: "0018,1083"
+DCM_IntervalsRejected: "0018,1084"
+DCM_HeartRate: "0018,1088"
+DCM_CardiacSynchronizationTechnique: "0018,9037"
+DCM_CardiacRRIntervalSpecified: "0018,9070"
+DCM_CardiacSynchronizationSequence: "0018,9118"
+# Frame Content Sequence; "description of the position in the cardiac cycle
+# that is most representative of this frame" -- the most literal vendor-neutral
+# "which phase" descriptor.
+DCM_CardiacCyclePosition: "0018,9236"
+# Formally scoped to PET dynamic/fMRI use cases, but conceptually an ordinal
+# phase/frame index -- borrowed-usage candidate like (0020,9241).
+DCM_TemporalPositionIndex: "0020,9128"
+DCM_NominalCardiacTriggerDelayTime: "0020,9153"
+DCM_NominalCardiacTriggerTimePriorToRPeak: "0020,9154"
+DCM_ActualCardiacTriggerTimePriorToRPeak: "0020,9155"
+DCM_RRIntervalTimeNominal: "0020,9251"
+DCM_ActualCardiacTriggerDelayTime: "0020,9252"
+
+# Standard DICOM NM (Nuclear Medicine) Multi-frame Module gating attributes
+# (PS3.3 C.8.4.8). Formally scoped to NM gated acquisitions; presence on a CT
+# image would be a borrowed/non-conformant usage, same pattern as (0020,9241).
+DCM_PhaseVector: "0054,0030"
+DCM_NumberOfPhases: "0054,0031"
+DCM_RRIntervalVector: "0054,0060"
+DCM_NumberOfRRIntervals: "0054,0061"
+# Time Slot = which phase-bin of the averaged heartbeat, as opposed to R-R
+# Interval above (which beat-duration bucket, e.g. normal vs. ectopic). Likely
+# the closer conceptual match for "which gate" / "total gates".
+DCM_TimeSlotVector: "0054,0070"
+DCM_NumberOfTimeSlots: "0054,0071"
+
+# GE private tags (GEMS_HELIOS_01 block, group 0045) -- cardiac recon parameters.
+EV_GE_CardiacReconAlgorithm: "0045,1030"
+EV_GE_AvgHeartRateForImage: "0045,1031"
+EV_GE_TemporalResolution: "0045,1032"
+EV_GE_PctRpeakDelay: "0045,1033"
+EV_GE_ActualPctRpeakDelay: "0045,1034"
+EV_GE_EkgFullMaStartPhase: "0045,1036"
+EV_GE_EkgFullMaEndPhase: "0045,1037"
+EV_GE_EkgModulationMaxMa: "0045,1038"
+EV_GE_EkgModulationMinMa: "0045,1039"
+EV_GE_NoiseReductionImageFilterDesc: "0045,103B"
+EV_GE_RPeakTimeDelay: "0045,103F"
+EV_GE_ActualRPeakTimeDelay: "0045,1044"
+EV_GE_CardiacScanOptions: "0045,1045"
+
+# GE private tags (GEMS_CT_CARDIAC_001 block, group 0049) -- CT Cardiac Sequence.
+EV_GE_HeartRateAtConfirm: "0049,1002"
+EV_GE_AvgHeartRatePriorToConfirm: "0049,1003"
+EV_GE_MinHeartRatePriorToConfirm: "0049,1004"
+EV_GE_MaxHeartRatePriorToConfirm: "0049,1005"
+EV_GE_NumReconSectors: "0049,100B"
+EV_GE_RpeakTimeStamps: "0049,100C"
+EV_GE_EkgGatingType: "0049,1016"
+EV_GE_EkgWaveTimeOffFirstDataPoint: "0049,101B"

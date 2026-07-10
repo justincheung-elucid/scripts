@@ -7,7 +7,12 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100):
     # formatter (reserved for a sign character on numeric columns) even when a custom
     # formatter is supplied. Simplest to just build the table by hand.
     def truncate(value) -> str:
-        s = str(value)
+        # A column mixing ints/strings with None gets upcast by pandas (e.g. to
+        # float64, turning None into nan) -- normalize back to "None" either way.
+        # Can't use pd.isna(value) directly: it returns an elementwise array (not
+        # a scalar) for list-like values such as multi-valued DICOM tags.
+        is_missing = value is None or (isinstance(value, float) and pd.isna(value))
+        s = "None" if is_missing else str(value)
         if len(s) > max_colwidth:
             return s[: max_colwidth - 3] + "..."
         return s

@@ -53,6 +53,14 @@ GE_LEGACY_PRIVATE_CREATORS = {
 def tag_to_string(tag: pydicom.tag.BaseTag) -> str:
     return f"({tag.group:04X},{tag.element:04X})"
 
+def find_element(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> pydicom.DataElement | None:
+    # Some private attributes (e.g. GE's CT Cardiac Sequence fields under
+    # (0049,1001)) live inside a sequence item rather than at the top level.
+    for elem in ds.iterall():
+        if elem.tag == tag:
+            return elem
+    return None
+
 @lru_cache(maxsize=None)
 def _load_tpl(filename: str) -> dict[tuple[str, str, str], tuple[str, str, str]]:
     # dicom3tools stores private elements with the private-block byte zeroed out

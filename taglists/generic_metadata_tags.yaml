@@ -1,0 +1,7 @@
+# Generic high-level identifying/versioning tags.
+StudyInstanceUID: "0020,000D"
+SeriesInstanceUID: "0020,000E"
+Manufacturer: "0008,0070"
+ManufacturerModelName: "0008,1090"
+DeviceSerialNumber: "0018,1000"
+SoftwareVersions: "0018,1020"
