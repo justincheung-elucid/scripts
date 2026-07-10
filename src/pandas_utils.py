@@ -1,6 +1,26 @@
+import ast
 import json
 
 import pandas as pd
+
+def _dict_sort_key(key: str):
+    # Dict keys here are always str(value) of whatever the original cell held (see
+    # build_rows_for_directory), so a numeric tuple like Image Position (Patient)
+    # becomes a string like "[-69.300, -120.400, -122.750]" -- sorting that
+    # lexicographically puts "[10.0, ...]" before "[2.0, ...]". Recover the original
+    # numeric value via literal_eval and sort on that instead, keeping the *display*
+    # string exactly as it was; anything that isn't a number/sequence-of-numbers
+    # (e.g. plain text values) falls back to plain string sorting, ordered after all
+    # numeric keys so the two tiers don't get compared against each other directly.
+    try:
+        parsed = ast.literal_eval(key)
+    except (ValueError, SyntaxError):
+        return (1, key)
+    if isinstance(parsed, (int, float)):
+        return (0, (parsed,))
+    if isinstance(parsed, (list, tuple)) and all(isinstance(x, (int, float)) for x in parsed):
+        return (0, tuple(parsed))
+    return (1, key)
 
 def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = False):
     # to_string() won't cooperate: it ignores the global display.max_colwidth option
@@ -19,7 +39,7 @@ def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = Fa
         if isinstance(value, dict):
             # Directory-mode aggregated {value: file_count} cells -- sort by key
             # for a stable, scannable order regardless of file-processing order.
-            value = dict(sorted(value.items()))
+            value = dict(sorted(value.items(), key=lambda kv: _dict_sort_key(kv[0])))
             if pretty:
                 # Indent like json.dumps(..., indent=4) instead of the flat repr.
                 return json.dumps(value, indent=4, default=str).split("\n")
