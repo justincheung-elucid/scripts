@@ -1,0 +1,3 @@
+[submodule "third_party/dicom3tools"]
+	path = third_party/dicom3tools
+	url = https://github.com/malaterre/dicom3tools.git
