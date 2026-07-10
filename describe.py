@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -86,6 +87,10 @@ def main(args: argparse.Namespace):
         rows = [row for row in rows if not row_is_uniform(row)]
     if args.hide_scattered:
         rows = [row for row in rows if not row_is_scattered(row)]
+
+    if not rows:
+        print("No tags matched the given filters.", file=sys.stderr)
+        sys.exit(1)
 
     df = pd.DataFrame(rows).set_index("tag")
     print_df_custom(df)
