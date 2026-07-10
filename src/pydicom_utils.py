@@ -7,10 +7,10 @@ import pydicom
 # dicom3tools (David Clunie's private DICOM tag dictionaries, vendored as a git
 # submodule) is the source of truth for private tag names here -- it's far more
 # complete than pydicom's own bundled private dictionary. See
-# third_party/dicom3tools/libsrc/standard/elmdict/*.tpl, one file per vendor.
+# deps/3p/dicom3tools/libsrc/standard/elmdict/*.tpl, one file per vendor.
 _ELMDICT_DIR = (
     Path(__file__).resolve().parent.parent
-    / "third_party" / "dicom3tools" / "libsrc" / "standard" / "elmdict"
+    / "deps" / "3p" / "dicom3tools" / "libsrc" / "standard" / "elmdict"
 )
 
 _TPL_LINE_RE = re.compile(
@@ -24,7 +24,7 @@ _TPL_LINE_RE = re.compile(
 
 # Manufacturer (matched as an uppercased substring of the file's (0008,0070)
 # Manufacturer element) -> the dicom3tools template file covering that vendor's
-# private tags. Add more vendors here as needed (see third_party/dicom3tools/
+# private tags. Add more vendors here as needed (see deps/3p/dicom3tools/
 # libsrc/standard/elmdict/ for the full list: siemens.tpl, philips.tpl, etc.).
 MANUFACTURER_TPL_FILES = {
     "GE MEDICAL": "gems.tpl",
