@@ -11,7 +11,14 @@ import pydicom
 import pandas as pd
 import yaml
 
-from src.pydicom_utils import tag_to_string, describe_name, index_elements, format_sequence_value, NameContext
+from src.pydicom_utils import (
+    tag_to_string,
+    describe_name,
+    index_elements,
+    format_sequence_value,
+    parse_tag_string,
+    NameContext,
+)
 from src.pandas_utils import print_df_custom
 from src.pseudotags import compute_pseudotags
 from src.tqdmcustom import tqdm as tqdm
@@ -36,11 +43,14 @@ def parse_args():
         "-f",
         "--filters",
         nargs="+",
-        metavar="FILE",
+        metavar="FILE_OR_TAG",
         help=(
-            "One or more YAML files, each a list of tags (e.g. \"0020,000D\") to "
-            "restrict output to. Names are still auto-resolved, same as unfiltered "
-            "output. The printed tags are the union across all given files."
+            "One or more YAML files (each a list of tags), tag strings, or a mix of "
+            "both, to restrict output to. Tag strings are robust to formatting: "
+            "\"0020,000D\", \"(0020,000D)\", \"0x0020,0x000D\", \"( 0x0020 , 0x000D )\", "
+            "etc. all work, and the same applies to entries within the YAML files. "
+            "Names are still auto-resolved, same as unfiltered output. The printed "
+            "tags are the union across everything given."
         ),
     )
     parser.add_argument(
@@ -85,13 +95,13 @@ def parse_args():
         help="Truncate printed cell values to this many characters (default: 100)",
     )
     parser.add_argument(
-        "-d",
-        "--pretty",
+        "-c",
+        "--compact",
         action="store_true",
         help=(
-            "Pretty-print: box-draw horizontal/vertical dividers between rows and "
-            "columns, and render dict-valued cells (e.g. directory-mode value "
-            "counts) with JSON-style indentation instead of a flat repr"
+            "Skip pretty-printing: no box-drawn dividers between rows/columns, and "
+            "dict-valued cells (e.g. directory-mode value counts) render as a flat "
+            "repr instead of JSON-style indentation"
         ),
     )
     return parser.parse_args()
@@ -124,7 +134,7 @@ def main(args: argparse.Namespace):
         sys.exit(1)
 
     df = pd.DataFrame(rows).set_index("tag")
-    print_df_custom(df, max_colwidth=args.max_colwidth, pretty=args.pretty)
+    print_df_custom(df, max_colwidth=args.max_colwidth, pretty=not args.compact)
 
     if picked_file is not None:
         print(picked_file.resolve())
@@ -223,18 +233,28 @@ def build_rows_for_directory(
         for tag in tag_order
     ]
 
-def load_filters(paths: list[str]) -> list[pydicom.tag.BaseTag]:
+def load_filters(entries: list[str]) -> list[pydicom.tag.BaseTag]:
     tags: list[pydicom.tag.BaseTag] = []
     seen: set[pydicom.tag.BaseTag] = set()
-    for path in paths:
-        with open(path) as f:
+
+    def add(tag: pydicom.tag.BaseTag):
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+
+    for entry in entries:
+        tag = parse_tag_string(entry)
+        if tag is not None:
+            add(tag)
+            continue
+        # Not a recognizable tag string -- treat it as a YAML file path instead.
+        with open(entry) as f:
             tag_strs = yaml.safe_load(f) or []
         for tag_str in tag_strs:
-            group, element = tag_str.split(",")
-            tag = pydicom.tag.Tag(int(group, 16), int(element, 16))
-            if tag not in seen:
-                seen.add(tag)
-                tags.append(tag)
+            tag = parse_tag_string(str(tag_str))
+            if tag is None:
+                raise ValueError(f"Could not parse tag {tag_str!r} in {entry}")
+            add(tag)
     return tags
 
 # ===== BOILERPLATE =================================

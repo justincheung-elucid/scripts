@@ -22,7 +22,7 @@ def _dict_sort_key(key: str):
         return (0, tuple(parsed))
     return (1, key)
 
-def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = False):
+def print_df_custom(df: pd.DataFrame, max_colwidth: int = 100, pretty: bool = True):
     # to_string() won't cooperate: it ignores the global display.max_colwidth option
     # (unlike print(df), which uses __repr__), its `justify` option only affects
     # headers, and object-dtype columns get a leading space baked in by its internal

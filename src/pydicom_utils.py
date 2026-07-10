@@ -54,6 +54,23 @@ GE_LEGACY_PRIVATE_CREATORS = {
 def tag_to_string(tag: pydicom.tag.BaseTag) -> str:
     return f"({tag.group:04X},{tag.element:04X})"
 
+# Accepts e.g. "(0020,0032)", "(0x0020,0x0032)", "0020,0032", "0x0020,0x0032", and
+# any of those with extra spaces around the parens/comma/hex components. Requires
+# parens to be paired -- either both present or neither, not one without the other.
+_PAREN_TAG_RE = re.compile(
+    r'^\(\s*(?:0[xX])?([0-9A-Fa-f]{1,4})\s*,\s*(?:0[xX])?([0-9A-Fa-f]{1,4})\s*\)$'
+)
+_BARE_TAG_RE = re.compile(
+    r'^(?:0[xX])?([0-9A-Fa-f]{1,4})\s*,\s*(?:0[xX])?([0-9A-Fa-f]{1,4})$'
+)
+
+def parse_tag_string(s: str) -> pydicom.tag.BaseTag | None:
+    match = _PAREN_TAG_RE.match(s.strip()) or _BARE_TAG_RE.match(s.strip())
+    if match is None:
+        return None
+    group_hex, element_hex = match.groups()
+    return pydicom.tag.Tag(int(group_hex, 16), int(element_hex, 16))
+
 def index_elements(ds: pydicom.Dataset) -> dict[pydicom.tag.BaseTag, pydicom.DataElement]:
     """Single-pass tag -> element lookup, including elements nested inside sequence
     items (e.g. GE's CT Cardiac Sequence fields under (0049,1001)). Building this
