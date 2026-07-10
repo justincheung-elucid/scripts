@@ -61,6 +61,19 @@ def find_element(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> pydicom.DataE
             return elem
     return None
 
+def format_sequence_value(seq: pydicom.Sequence, max_preview: int = 3) -> str:
+    summary = f"<Sequence, {len(seq)} item(s)>"
+    if not seq:
+        return summary
+    first_item = list(seq[0])
+    parts = []
+    for e in first_item[:max_preview]:
+        name = e.keyword or tag_to_string(e.tag)
+        value = f"<Sequence, {len(e.value)} item(s)>" if e.VR == "SQ" else e.value
+        parts.append(f"{name}={value}")
+    suffix = ", ..." if len(first_item) > max_preview else ""
+    return f"{summary} [{', '.join(parts)}{suffix}]"
+
 @lru_cache(maxsize=None)
 def _load_tpl(filename: str) -> dict[tuple[str, str, str], tuple[str, str, str]]:
     # dicom3tools stores private elements with the private-block byte zeroed out
