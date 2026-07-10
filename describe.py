@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pydicom
 import pandas as pd
 import yaml
 
-from src.pydicom_utils import tag_to_string, describe_name, find_element, format_sequence_value
+from src.pydicom_utils import tag_to_string, describe_name, index_elements, format_sequence_value, NameContext
 from src.pandas_utils import print_df_custom
+from src.tqdmcustom import tqdm as tqdm
 
 # ===== CLI =========================================
 def parse_args():
@@ -130,14 +133,20 @@ def row_is_scattered(row: dict) -> bool:
     return isinstance(value, dict) and value and all(count == 1 for count in value.values())
 
 def build_rows(ds: pydicom.Dataset, filter_paths: list[str] | None) -> list[dict]:
+    context = NameContext(ds)
     if filter_paths:
-        return [build_row(ds, tag, find_element(ds, tag)) for tag in load_filters(filter_paths)]
-    return [build_row(ds, elem.tag, elem) for elem in ds.iterall()]
+        elements = index_elements(ds)
+        return [
+            build_row(context, tag, elements.get(tag)) for tag in load_filters(filter_paths)
+        ]
+    return [build_row(context, elem.tag, elem) for elem in ds.iterall()]
 
-def build_row(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None) -> dict:
+def build_row(
+    context: NameContext, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None
+) -> dict:
     return {
         "tag": tag_to_string(tag),
-        "name": describe_name(ds, tag, elem),
+        "name": describe_name(context, tag, elem),
         "VR": elem.VR if elem else None,
         "VM": elem.VM if elem else None,
         "value": (
@@ -147,19 +156,31 @@ def build_row(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag, elem: pydicom.DataE
         ),
     }
 
+def _build_rows_for_file(filepath: Path, filter_paths: list[str] | None) -> list[dict]:
+    return build_rows(read_dataset(filepath), filter_paths)
+
 def build_rows_for_directory(directory: Path, filter_paths: list[str] | None) -> list[dict]:
     tag_order: list[str] = []
     first_seen_row: dict[str, dict] = {}
     value_counts_by_tag: dict[str, Counter] = {}
 
-    for filepath in list_directory_files(directory):
-        for row in build_rows(read_dataset(filepath), filter_paths):
-            tag = row["tag"]
-            if tag not in first_seen_row:
-                tag_order.append(tag)
-                first_seen_row[tag] = row
-                value_counts_by_tag[tag] = Counter()
-            value_counts_by_tag[tag][str(row["value"])] += 1
+    files = list_directory_files(directory)
+    # Each file's parsing is independent until this aggregation step, and is the
+    # dominant cost for large directories, so it's worth spreading across cores.
+    # Capped at half the available CPUs to leave headroom for other work on the
+    # machine while this runs.
+    max_workers = max(1, (os.cpu_count() or 1) // 2)
+    print(f"Using {max_workers} process(es)", file=sys.stderr)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        per_file_rows = executor.map(_build_rows_for_file, files, [filter_paths] * len(files))
+        for rows in tqdm(per_file_rows, total=len(files), desc="Reading files"):
+            for row in rows:
+                tag = row["tag"]
+                if tag not in first_seen_row:
+                    tag_order.append(tag)
+                    first_seen_row[tag] = row
+                    value_counts_by_tag[tag] = Counter()
+                value_counts_by_tag[tag][str(row["value"])] += 1
 
     return [
         {**first_seen_row[tag], "value": dict(value_counts_by_tag[tag])}

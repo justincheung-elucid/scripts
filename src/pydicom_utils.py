@@ -54,13 +54,15 @@ GE_LEGACY_PRIVATE_CREATORS = {
 def tag_to_string(tag: pydicom.tag.BaseTag) -> str:
     return f"({tag.group:04X},{tag.element:04X})"
 
-def find_element(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> pydicom.DataElement | None:
-    # Some private attributes (e.g. GE's CT Cardiac Sequence fields under
-    # (0049,1001)) live inside a sequence item rather than at the top level.
+def index_elements(ds: pydicom.Dataset) -> dict[pydicom.tag.BaseTag, pydicom.DataElement]:
+    """Single-pass tag -> element lookup, including elements nested inside sequence
+    items (e.g. GE's CT Cardiac Sequence fields under (0049,1001)). Building this
+    once and reusing it for multiple tag lookups is far cheaper than re-scanning
+    the whole dataset with ds.iterall() per tag."""
+    index: dict[pydicom.tag.BaseTag, pydicom.DataElement] = {}
     for elem in ds.iterall():
-        if elem.tag == tag:
-            return elem
-    return None
+        index.setdefault(elem.tag, elem)
+    return index
 
 def format_sequence_value(seq: pydicom.Sequence, max_preview: int = 3) -> str:
     summary = f"<Sequence, {len(seq)} item(s)>"
@@ -121,10 +123,28 @@ def _tag_only_name(tag: pydicom.tag.BaseTag) -> str:
     except KeyError:
         return "Private tag data" if tag.is_private else "Unknown"
 
+class NameContext:
+    """Per-dataset cache for the parts of name resolution that only depend on the
+    dataset as a whole (its manufacturer, each private group's actual creator) --
+    not the element being named. Building one of these once per file, instead of
+    re-deriving this from `ds` on every describe_name() call, avoids a full
+    pydicom.Dataset.__getitem__("Manufacturer") lookup per element, which dominates
+    runtime on large directories (profiled: ~half of total time)."""
+
+    def __init__(self, ds: pydicom.Dataset):
+        self.tpl_file = _manufacturer_tpl_file(ds)
+        self._ds = ds
+        self._creator_by_group: dict[int, str | None] = {}
+
+    def actual_private_creator(self, group: int) -> str | None:
+        if group not in self._creator_by_group:
+            self._creator_by_group[group] = _actual_private_creator(self._ds, group)
+        return self._creator_by_group[group]
+
 def describe_name(
-    ds: pydicom.Dataset, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None = None
+    context: NameContext, tag: pydicom.tag.BaseTag, elem: pydicom.DataElement | None = None
 ) -> str:
-    tpl_file = _manufacturer_tpl_file(ds)
+    tpl_file = context.tpl_file
     fallback = _tag_only_name(tag)
 
     if tag.is_private_creator:
@@ -142,7 +162,7 @@ def describe_name(
     if tpl_file is None:
         return fallback
 
-    creator = _actual_private_creator(ds, tag.group)
+    creator = context.actual_private_creator(tag.group)
     guessed = not creator
     if guessed:
         creator = GE_LEGACY_PRIVATE_CREATORS.get(tag.group)
