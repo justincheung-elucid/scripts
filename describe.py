@@ -110,6 +110,7 @@ def parse_args():
 def main(args: argparse.Namespace):
     path = Path(args.filepath_in)
     picked_file = None
+    is_directory_aggregate = path.is_dir() and not args.one
 
     if path.is_dir():
         if args.one:
@@ -133,6 +134,9 @@ def main(args: argparse.Namespace):
         print("No tags matched the given filters.", file=sys.stderr)
         sys.exit(1)
 
+    if is_directory_aggregate:
+        rows = [rename_value_column(row) for row in rows]
+
     df = pd.DataFrame(rows).set_index("tag")
     print_df_custom(df, max_colwidth=args.max_colwidth, pretty=not args.compact)
 
@@ -150,6 +154,11 @@ def pick_representative_file(directory: Path) -> Path:
     # Abstracted so the selection strategy can be swapped later. Currently: oldest
     # file by modification time.
     return min(list_directory_files(directory), key=lambda p: p.stat().st_mtime)
+
+VALUE_COUNTS_COLUMN = "value counts (unique value -> file count)"
+
+def rename_value_column(row: dict) -> dict:
+    return {(VALUE_COUNTS_COLUMN if k == "value" else k): v for k, v in row.items()}
 
 def row_is_all(row: dict, sentinel) -> bool:
     """True if every file's value for this row's tag equals `sentinel` -- generalizes
