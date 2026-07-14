@@ -104,6 +104,23 @@ class Check:
     passed: bool
     detail: str
 
+@dataclass
+class Report:
+    """Global, mutable scratch space for verdict strings that exist purely for
+    human-readable reporting. Deliberately NOT threaded through function return
+    values/parameters (that would be the "right" way to do it) -- kept as global
+    state instead so that functions like group_series_by_position(), which are
+    meant to mirror what a future C++ port would actually compute, don't have
+    their signatures polluted with string-building concerns that only matter for
+    this Python script's own reporting. Reset at the top of every
+    separate_phases() call."""
+    multiphasic_verdict: str | None = None
+
+    def reset(self):
+        self.multiphasic_verdict = None
+
+report = Report()
+
 def status(passed: bool) -> str:
     return "PASS" if passed else "FAIL"
 
@@ -140,12 +157,13 @@ def all_tags_in(
 
 def group_series_by_position(
     datasets: list[pydicom.Dataset],
-) -> tuple[defaultdict[str, list[pydicom.Dataset]] | None, str]:
+) -> defaultdict[str, list[pydicom.Dataset]] | None:
     """
     Analogous to Cornerstone3D's getIPPGroups;
     group by position and enforce structural constraints on positional groups.
-    Returns the positional groups (None if any check
-    failed) and a one-line multiphasic verdict for the SUMMARY.
+    Returns the positional groups, or None if any check failed. The one-line
+    multiphasic verdict for the SUMMARY is written to the global `report`
+    instead of returned (see Report).
 
     If a check fails, then we should assume upstream that we return just everything in one series.
     """
@@ -154,7 +172,8 @@ def group_series_by_position(
         position = tag_value(ds, parse_tag(POSITION_TAG))
         if position is None:
             logger.warning("Multiphase separation - a file is missing its position value. TODO - what file?")
-            return None, "INCONCLUSIVE (at least one file is missing a position value)"
+            report.multiphasic_verdict = "INCONCLUSIVE (at least one file is missing a position value)"
+            return None
         position_groups[position].append(ds)
     logger.debug("group_series_by_position: all %d files have a position value", len(datasets))
 
@@ -170,14 +189,17 @@ def group_series_by_position(
             "{group size: number of positions with that size} = %s",
             dict(sorted(size_histogram.items())),
         )
-        return None, "INCONCLUSIVE (irregular position grouping)"
+        report.multiphasic_verdict = "INCONCLUSIVE (irregular position grouping)"
+        return None
     logger.debug("group_series_by_position: all position groups are the same size (%d)", frame_counts[0])
 
     # Check if all positions are size 1 (only need to see one).
     if frame_counts[0] == 1:
-        return None, "NO (single image per position -- not multiphasic)"
+        report.multiphasic_verdict = "NO (single image per position -- not multiphasic)"
+        return None
 
-    return position_groups, f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
+    report.multiphasic_verdict = f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
+    return position_groups
 
 def candidate_checks(
     groups: dict[str, list[pydicom.Dataset]],
@@ -418,6 +440,8 @@ def format_report(
 def separate_phases(
     input_folder: Path,
 ) -> list[Path]:
+    ret = [input_folder] # always include the original series folder
+
     # Non-recursive: find_series_directories() already resolved `folder` down to
     # an exact directory that directly holds its own *.dcm files -- rglob here
     # would double-count any files under a nested series subdirectory instead of
@@ -432,7 +456,7 @@ def separate_phases(
     # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
     candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
 
-    groups, multiphasic_verdict = group_series_by_position(datasets)
+    groups = group_series_by_position(datasets)
 
     candidate_results = []
     monotonic_result = None
@@ -445,17 +469,17 @@ def separate_phases(
         mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
         monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
-    report = format_report(
-        input_folder, len(datasets), multiphasic_verdict,
+    report_text = format_report(
+        input_folder, len(datasets), report.multiphasic_verdict,
         groups, candidate_results, monotonic_result,
     )
     category = categorize(groups, candidate_results, monotonic_result)
     output_file = output_path_for(input_folder, category)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(report)
+    output_file.write_text(report_text)
 
     print(input_folder)
-    for line in summarize(multiphasic_verdict, groups, candidate_results, monotonic_result):
+    for line in summarize(report.multiphasic_verdict, groups, candidate_results, monotonic_result):
         print(f"  {line}")
     print(f"  Wrote {output_file}")
     return True
@@ -469,6 +493,7 @@ def main():
             print(f"WARNING: No DICOM files found under {path}.", file=sys.stderr)
             continue
         for series_dir in series_dirs:
+            report.reset()
             ret = separate_phases(series_dir)
 
 # ===== BOILERPLATE =================================
