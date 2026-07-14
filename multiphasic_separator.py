@@ -170,9 +170,10 @@ def group_series_by_position(
         position_groups[position].append(ds)
     logger.debug("group_series_by_position: all %d files have a position value", len(datasets))
 
+    # Check if the number of phases is the same across every position
     frame_counts = [len(v) for v in position_groups.values()]
     if len(set(frame_counts)) != 1:
-        # Once we know sizes differ, log a breakdown of exactly how
+        # Once we know sizes differ, log a breakdown for debugging
         size_histogram: dict[int, int] = defaultdict(int)
         for size in frame_counts:
             size_histogram[size] += 1
@@ -182,13 +183,10 @@ def group_series_by_position(
             dict(sorted(size_histogram.items())),
         )
         return None, "INCONCLUSIVE (irregular position grouping)"
-
-    # Sizes are uniform, so any one group is representative of all of them --
-    # no need for a min()/all() scan to check whether that shared size is >1.
-    frame_count = frame_counts[0]
     logger.debug("group_series_by_position: all position groups are the same size (%d)", frame_count)
 
-    if frame_count == 1:
+    # Check if all positions are size 1 (only need to see one).
+    if frame_counts[0] == 1:
         return None, "NO (single image per position -- not multiphasic)"
 
     # A single position repeated many times (e.g. a cine loop over one slice) has
