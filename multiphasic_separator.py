@@ -152,7 +152,7 @@ def all_tags_in(
 
 def group_series_by_position(
     datasets: list[pydicom.Dataset],
-) -> tuple[dict[str, list[pydicom.Dataset]] | None, str]:
+) -> tuple[defaultdict[str, list[pydicom.Dataset]] | None, str]:
     """
     Analogous to Cornerstone3D's getIPPGroups;
     group by position and enforce structural constraints on positional groups.
@@ -161,7 +161,7 @@ def group_series_by_position(
 
     If a check fails, then we should assume upstream that we return just everything in one series.
     """
-    position_groups = defaultdict(list)
+    position_groups: defaultdict[str, list[pydicom.Dataset]] = defaultdict(list)
     for ds in datasets:
         position = tag_value(ds, parse_tag(POSITION_TAG))
         if position is None:
@@ -183,21 +183,13 @@ def group_series_by_position(
             dict(sorted(size_histogram.items())),
         )
         return None, "INCONCLUSIVE (irregular position grouping)"
-    logger.debug("group_series_by_position: all position groups are the same size (%d)", frame_count)
+    logger.debug("group_series_by_position: all position groups are the same size (%d)", frame_counts[0])
 
     # Check if all positions are size 1 (only need to see one).
     if frame_counts[0] == 1:
         return None, "NO (single image per position -- not multiphasic)"
 
-    # A single position repeated many times (e.g. a cine loop over one slice) has
-    # a phase axis but no position axis -- not multiphasic in the sense this
-    # script cares about (splitting a 3D+time series apart by position), even
-    # though every check above passes for it.
-    if len(position_groups) <= 1:
-        logger.debug("group_series_by_position: only %d distinct position value(s)", len(position_groups))
-        return None, "NO (only one distinct position -- not multiphasic)"
-
-    return dict(position_groups), f"YES ({len(position_groups)} positions x {frame_count} phases)"
+    return position_groups, f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
 
 def candidate_checks(
     groups: dict[str, list[pydicom.Dataset]],
