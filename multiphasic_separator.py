@@ -440,23 +440,21 @@ def format_report(
 def separate_phases(
     input_folder: Path,
 ) -> list[Path]:
+    """
+    input_folder is assumed to be a flat folder of DICOMs. 
+    """
     ret = [input_folder] # always include the original series folder
 
-    # Non-recursive: find_series_directories() already resolved `folder` down to
-    # an exact directory that directly holds its own *.dcm files -- rglob here
-    # would double-count any files under a nested series subdirectory instead of
-    # leaving them for that subdirectory's own, independent run.
     files = sorted(input_folder.glob("*.dcm"))
     if not files:
         print(f"No DICOM files found directly under {input_folder}.", file=sys.stderr)
         return False
     datasets = [pydicom.dcmread(f, stop_before_pixels=True) for f in files]
 
-    context = NameContext(datasets[0])
-    # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
-    candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
-
     groups = group_series_by_position(datasets)
+
+    # candidates = [(describe_name(NameContext(datasets[0]), tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
+    candidates = all_tags_in(NameContext(datasets[0]), datasets[0], exclude=parse_tag(POSITION_TAG))
 
     candidate_results = []
     monotonic_result = None
@@ -465,7 +463,7 @@ def separate_phases(
             checks, overall = candidate_checks(groups, tag, len(datasets))
             candidate_results.append((name, tag, checks, overall))
 
-        monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
+        monotonic_name = describe_name(NameContext(datasets[0]), parse_tag(MONOTONIC_TAG))
         mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
         monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
