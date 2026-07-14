@@ -27,6 +27,7 @@ so every attempted tag's full check breakdown -- not just VALID/rejected -- is
 available, without having to reach for a separate script."""
 
 import argparse
+import logging
 import re
 import sys
 from collections import Counter, defaultdict
@@ -36,6 +37,8 @@ from pathlib import Path
 import pydicom
 
 from src.pydicom_utils import NameContext, describe_name, load_tag_list, parse_tag_string, tag_to_string
+
+logger = logging.getLogger(__name__)
 
 POSITION_TAG = "0020,0032"  # ImagePositionPatient
 
@@ -147,64 +150,48 @@ def all_tags_in(
         if elem.tag != exclude and elem.VR != "SQ"
     ]
 
-def get_ipp_groups(
+def group_series_by_position(
     datasets: list[pydicom.Dataset],
-) -> tuple[list[Check], dict[str, list[pydicom.Dataset]] | None, str]:
-    """Structural preconditions on the position tag alone (Cornerstone3D's
-    getIPPGroups), with tag_combos.py-style verbose detail on each. Returns the
-    checks, the resulting position groups (None if any check failed -- grouping
-    is refused rather than run on ill-formed data), and a one-line multiphasic
-    verdict for the summary at the top of the report."""
-    groups = defaultdict(list)
-    missing = 0
+) -> tuple[dict[str, list[pydicom.Dataset]] | None, str]:
+    """
+    Analogous to Cornerstone3D's getIPPGroups;
+    group by position and enforce structural constraints on positional groups.
+    Returns the positional groups (None if any check
+    failed) and a one-line multiphasic verdict for the SUMMARY."""
+    position_groups = defaultdict(list)
     for ds in datasets:
         position = tag_value(ds, parse_tag(POSITION_TAG))
         if position is None:
-            missing += 1
-        else:
-            groups[position].append(ds)
+            logger.debug("get_ipp_groups: a file is missing its position value")
+            return None, "INCONCLUSIVE (some files are missing a position value)"
+        position_groups[position].append(ds)
+    logger.debug("get_ipp_groups: all %d files have a position value", len(datasets))
 
-    checks = [Check(
-        "(getIPPGroups) Every file has a position value",
-        missing == 0,
-        f"{missing} file(s) missing a position value" if missing else "all files have a position value",
-    )]
-    if missing:
-        return checks, None, "INCONCLUSIVE (some files are missing a position value)"
-
-    sizes = [len(v) for v in groups.values()]
+    sizes = [len(v) for v in position_groups.values()]
     min_size = min(sizes)
-    singles = sorted(pos for pos, v in groups.items() if len(v) <= 1)
-    checks.append(Check(
-        "Every position value repeats (count > 1)",
-        min_size > 1,
-        f"min count = {min_size}" + (f"; non-repeating value(s): {singles}" if singles else ""),
-    ))
+    if min_size <= 1:
+        singles = sorted(pos for pos, v in position_groups.items() if len(v) <= 1)
+        logger.debug("get_ipp_groups: non-repeating position value(s): %s", singles)
+        if len(singles) == len(position_groups):
+            return None, "NO (single image per position -- not multiphasic)"
+        return None, "INCONCLUSIVE (irregular position grouping)"
+    logger.debug("get_ipp_groups: every position value repeats (min count = %d)", min_size)
 
     distinct_sizes = sorted(set(sizes))
-    checks.append(Check(
-        "All position value counts are equal to each other",
-        len(distinct_sizes) == 1,
-        f"distinct counts seen: {distinct_sizes}",
-    ))
+    if len(distinct_sizes) != 1:
+        logger.debug("get_ipp_groups: distinct position-group sizes seen: %s", distinct_sizes)
+        return None, "INCONCLUSIVE (irregular position grouping)"
+    logger.debug("get_ipp_groups: all position groups are the same size (%d)", distinct_sizes[0])
 
-    checks.append(Check(
-        "More than one distinct position value",
-        len(groups) > 1,
-        f"{len(groups)} distinct position value(s)",
-    ))
-
-    if all(check.passed for check in checks):
-        return checks, dict(groups), f"YES ({len(groups)} positions x {sizes[0]} phases)"
     # A single position repeated many times (e.g. a cine loop over one slice) has
     # a phase axis but no position axis -- not multiphasic in the sense this
     # script cares about (splitting a 3D+time series apart by position), even
-    # though checks 1-3 above are all individually satisfied for it.
-    if len(groups) == 1:
-        return checks, None, "NO (only one distinct position -- not multiphasic)"
-    if len(singles) == len(groups):
-        return checks, None, "NO (single image per position -- not multiphasic)"
-    return checks, None, "INCONCLUSIVE (irregular position grouping)"
+    # though every check above passes for it.
+    if len(position_groups) <= 1:
+        logger.debug("get_ipp_groups: only %d distinct position value(s)", len(position_groups))
+        return None, "NO (only one distinct position -- not multiphasic)"
+
+    return dict(position_groups), f"YES ({len(position_groups)} positions x {sizes[0]} phases)"
 
 def candidate_checks(
     groups: dict[str, list[pydicom.Dataset]],
@@ -396,7 +383,6 @@ def format_groups(groups: dict[str, list[pydicom.Dataset]]) -> list[str]:
 def format_report(
     folder: Path,
     total_files: int,
-    position_check_results: list[Check],
     multiphasic_verdict: str,
     groups: dict[str, list[pydicom.Dataset]] | None,
     candidate_results: list[CandidateResult],
@@ -410,12 +396,7 @@ def format_report(
         f"Position tag: {tag_to_string(parse_tag(POSITION_TAG))}",
         f"Total files: {total_files}",
         "",
-        "Structural preconditions (position tag alone):",
     ]
-    for i, check in enumerate(position_check_results, start=1):
-        lines.append(f"  {i}. {check.label}: {status(check.passed)}")
-        lines.append(f"     {check.detail}")
-    lines.append("")
 
     if groups is None:
         lines.append("Structural precondition failed -- no candidate tags were evaluated.")
@@ -463,7 +444,7 @@ def separate_phases(
     else:
         candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
 
-    position_check_results, groups, multiphasic_verdict = get_ipp_groups(datasets)
+    groups, multiphasic_verdict = group_series_by_position(datasets)
 
     candidate_results = []
     monotonic_result = None
@@ -477,7 +458,7 @@ def separate_phases(
         monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
     report = format_report(
-        input_folder, len(datasets), position_check_results, multiphasic_verdict,
+        input_folder, len(datasets), multiphasic_verdict,
         groups, candidate_results, monotonic_result,
     )
     category = categorize(groups, candidate_results, monotonic_result)
