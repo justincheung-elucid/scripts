@@ -30,7 +30,7 @@ import argparse
 import logging
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,20 +171,25 @@ def group_series_by_position(
     logger.debug("group_series_by_position: all %d files have a position value", len(datasets))
 
     frame_counts = [len(v) for v in position_groups.values()]
-    min_size = min(frame_counts)
-    if min_size <= 1:
-        singles = sorted(pos for pos, v in position_groups.items() if len(v) <= 1)
-        logger.debug("group_series_by_position: non-repeating position value(s): %s", singles)
-        if len(singles) == len(position_groups):
-            return None, "NO (single image per position -- not multiphasic)"
+    if len(set(frame_counts)) != 1:
+        # Once we know sizes differ, log a breakdown of exactly how
+        size_histogram: dict[int, int] = defaultdict(int)
+        for size in frame_counts:
+            size_histogram[size] += 1
+        logger.debug(
+            "group_series_by_position: non-uniform position-group sizes -- "
+            "{group size: number of positions with that size} = %s",
+            dict(sorted(size_histogram.items())),
+        )
         return None, "INCONCLUSIVE (irregular position grouping)"
-    logger.debug("group_series_by_position: every position value repeats (min count = %d)", min_size)
 
-    distinct_sizes = sorted(set(frame_counts))
-    if len(distinct_sizes) != 1:
-        logger.debug("group_series_by_position: distinct position-group sizes seen: %s", distinct_sizes)
-        return None, "INCONCLUSIVE (irregular position grouping)"
-    logger.debug("group_series_by_position: all position groups are the same size (%d)", distinct_sizes[0])
+    # Sizes are uniform, so any one group is representative of all of them --
+    # no need for a min()/all() scan to check whether that shared size is >1.
+    frame_count = frame_counts[0]
+    logger.debug("group_series_by_position: all position groups are the same size (%d)", frame_count)
+
+    if frame_count == 1:
+        return None, "NO (single image per position -- not multiphasic)"
 
     # A single position repeated many times (e.g. a cine loop over one slice) has
     # a phase axis but no position axis -- not multiphasic in the sense this
@@ -194,7 +199,7 @@ def group_series_by_position(
         logger.debug("group_series_by_position: only %d distinct position value(s)", len(position_groups))
         return None, "NO (only one distinct position -- not multiphasic)"
 
-    return dict(position_groups), f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
+    return dict(position_groups), f"YES ({len(position_groups)} positions x {frame_count} phases)"
 
 def candidate_checks(
     groups: dict[str, list[pydicom.Dataset]],
@@ -206,7 +211,10 @@ def candidate_checks(
     examples). Overall pass/fail is still exactly Cornerstone3D's test4DTag (the
     last two checks) -- the rest are informative, not gating."""
     per_group_values = {pos: [tag_value(ds, tag) for ds in dslist] for pos, dslist in groups.items()}
-    counts = Counter(v for values in per_group_values.values() for v in values)
+    counts: dict[str | None, int] = defaultdict(int)
+    for values in per_group_values.values():
+        for v in values:
+            counts[v] += 1
 
     min_count = min(counts.values())
     singles = sorted(v for v, c in counts.items() if c <= 1)
@@ -245,12 +253,14 @@ def candidate_checks(
         detail,
     )
 
-    value_sets = Counter(frozenset(values) for values in per_group_values.values())
+    value_sets: dict[frozenset, int] = defaultdict(int)
+    for values in per_group_values.values():
+        value_sets[frozenset(values)] += 1
     if len(value_sets) > 1:
         # Summarize by set *size* (weighted by how many groups have a set of that
         # size), rather than dumping one line per distinct set -- there can be as
         # many distinct sets as there are groups.
-        size_histogram = Counter()
+        size_histogram: dict[int, int] = defaultdict(int)
         for value_set, n in value_sets.items():
             size_histogram[len(value_set)] += n
         detail = (f"{len(value_sets)} distinct value-sets found across {len(groups)} groups; "
