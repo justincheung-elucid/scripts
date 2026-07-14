@@ -442,6 +442,8 @@ def separate_phases(
 ) -> list[Path]:
     """
     input_folder is assumed to be a flat folder of DICOMs. 
+
+    Output is list of folders corresponding to newly created separated-out series.
     """
     ret = [input_folder] # always include the original series folder
 
@@ -452,6 +454,9 @@ def separate_phases(
     datasets = [pydicom.dcmread(f, stop_before_pixels=True) for f in files]
 
     groups = group_series_by_position(datasets)
+    if groups is None:
+        # No separation.
+        return [input_folder]
 
     # candidates = [(describe_name(NameContext(datasets[0]), tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
     candidates = all_tags_in(NameContext(datasets[0]), datasets[0], exclude=parse_tag(POSITION_TAG))
