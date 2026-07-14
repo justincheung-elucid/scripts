@@ -466,7 +466,7 @@ def main():
         path = Path(path_arg)
         series_dirs = find_series_directories(path)
         if not series_dirs:
-            print(f"No DICOM files found under {path}.", file=sys.stderr)
+            print(f"WARNING: No DICOM files found under {path}.", file=sys.stderr)
             continue
         for series_dir in series_dirs:
             ret = separate_phases(series_dir)
