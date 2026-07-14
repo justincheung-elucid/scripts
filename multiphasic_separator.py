@@ -148,7 +148,7 @@ def all_tags_in(
     ]
 
 def get_ipp_groups(
-    datasets: list[pydicom.Dataset], position_tag: pydicom.tag.BaseTag
+    datasets: list[pydicom.Dataset],
 ) -> tuple[list[Check], dict[str, list[pydicom.Dataset]] | None, str]:
     """Structural preconditions on the position tag alone (Cornerstone3D's
     getIPPGroups), with tag_combos.py-style verbose detail on each. Returns the
@@ -158,7 +158,7 @@ def get_ipp_groups(
     groups = defaultdict(list)
     missing = 0
     for ds in datasets:
-        position = tag_value(ds, position_tag)
+        position = tag_value(ds, parse_tag(POSITION_TAG))
         if position is None:
             missing += 1
         else:
@@ -395,7 +395,6 @@ def format_groups(groups: dict[str, list[pydicom.Dataset]]) -> list[str]:
 
 def format_report(
     folder: Path,
-    position_tag: pydicom.tag.BaseTag,
     total_files: int,
     position_check_results: list[Check],
     multiphasic_verdict: str,
@@ -408,7 +407,7 @@ def format_report(
         *summarize(multiphasic_verdict, groups, candidate_results, monotonic_result),
         "",
         f"Folder: {folder.resolve()}",
-        f"Position tag: {tag_to_string(position_tag)}",
+        f"Position tag: {tag_to_string(parse_tag(POSITION_TAG))}",
         f"Total files: {total_files}",
         "",
         "Structural preconditions (position tag alone):",
@@ -448,9 +447,6 @@ def separate_phases(
     input_folder: Path,
     requested_tags: list[pydicom.tag.BaseTag] | None,
 ) -> list[Path]:
-    position_tag = parse_tag(POSITION_TAG)
-    monotonic_tag = parse_tag(MONOTONIC_TAG)
-
     # Non-recursive: find_series_directories() already resolved `folder` down to
     # an exact directory that directly holds its own *.dcm files -- rglob here
     # would double-count any files under a nested series subdirectory instead of
@@ -465,9 +461,9 @@ def separate_phases(
     if requested_tags is not None:
         candidates = [(describe_name(context, tag), tag) for tag in requested_tags]
     else:
-        candidates = all_tags_in(context, datasets[0], exclude=position_tag)
+        candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
 
-    position_check_results, groups, multiphasic_verdict = get_ipp_groups(datasets, position_tag)
+    position_check_results, groups, multiphasic_verdict = get_ipp_groups(datasets)
 
     candidate_results = []
     monotonic_result = None
@@ -476,12 +472,12 @@ def separate_phases(
             checks, overall = candidate_checks(groups, tag, len(datasets))
             candidate_results.append((name, tag, checks, overall))
 
-        monotonic_name = describe_name(context, monotonic_tag)
-        mono_checks, mono_overall = monotonic_checks(datasets, groups, monotonic_tag)
-        monotonic_result = (monotonic_name, monotonic_tag, mono_checks, mono_overall)
+        monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
+        mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
+        monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
     report = format_report(
-        input_folder, position_tag, len(datasets), position_check_results, multiphasic_verdict,
+        input_folder, len(datasets), position_check_results, multiphasic_verdict,
         groups, candidate_results, monotonic_result,
     )
     category = categorize(groups, candidate_results, monotonic_result)
