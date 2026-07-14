@@ -65,18 +65,6 @@ def parse_args():
             "is processed independently."
         ),
     )
-    parser.add_argument(
-        "--tags", "-t",
-        nargs="+",
-        metavar="FILE_OR_TAG",
-        help=(
-            "Restrict the candidate discriminating-tag search to these tags, tried "
-            "in the order given, instead of the default of trying every tag found "
-            "in the series' first file. Accepts a mix of YAML files (each a plain "
-            "list of tags -- see taglists/) and/or bare tag strings, same flexible "
-            "parsing as describe.py's -f."
-        ),
-    )
     return parser.parse_args()
 
 # ===== CORE IMPLEMENTATION =========================
@@ -429,7 +417,6 @@ def format_report(
 
 def separate_phases(
     input_folder: Path,
-    requested_tags: list[pydicom.tag.BaseTag] | None,
 ) -> list[Path]:
     # Non-recursive: find_series_directories() already resolved `folder` down to
     # an exact directory that directly holds its own *.dcm files -- rglob here
@@ -442,10 +429,8 @@ def separate_phases(
     datasets = [pydicom.dcmread(f, stop_before_pixels=True) for f in files]
 
     context = NameContext(datasets[0])
-    if requested_tags is not None:
-        candidates = [(describe_name(context, tag), tag) for tag in requested_tags]
-    else:
-        candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
+    # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
+    candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG))
 
     groups, multiphasic_verdict = group_series_by_position(datasets)
 
@@ -477,8 +462,6 @@ def separate_phases(
 
 def main():
     args = parse_args()
-    requested_tags = load_tag_list(args.tags) if args.tags else None
-
     for path_arg in args.paths:
         path = Path(path_arg)
         series_dirs = find_series_directories(path)
@@ -486,7 +469,7 @@ def main():
             print(f"No DICOM files found under {path}.", file=sys.stderr)
             continue
         for series_dir in series_dirs:
-            ret = separate_phases(series_dir, requested_tags)
+            ret = separate_phases(series_dir)
 
 # ===== BOILERPLATE =================================
 if __name__ == "__main__":
