@@ -157,41 +157,44 @@ def group_series_by_position(
     Analogous to Cornerstone3D's getIPPGroups;
     group by position and enforce structural constraints on positional groups.
     Returns the positional groups (None if any check
-    failed) and a one-line multiphasic verdict for the SUMMARY."""
+    failed) and a one-line multiphasic verdict for the SUMMARY.
+
+    If a check fails, then we should assume upstream that we return just everything in one series.
+    """
     position_groups = defaultdict(list)
     for ds in datasets:
         position = tag_value(ds, parse_tag(POSITION_TAG))
         if position is None:
-            logger.debug("get_ipp_groups: a file is missing its position value")
-            return None, "INCONCLUSIVE (some files are missing a position value)"
+            logger.warning("Multiphase separation - a file is missing its position value. TODO - what file?")
+            return None, "INCONCLUSIVE (at least one file is missing a position value)"
         position_groups[position].append(ds)
-    logger.debug("get_ipp_groups: all %d files have a position value", len(datasets))
+    logger.debug("group_series_by_position: all %d files have a position value", len(datasets))
 
-    sizes = [len(v) for v in position_groups.values()]
-    min_size = min(sizes)
+    frame_counts = [len(v) for v in position_groups.values()]
+    min_size = min(frame_counts)
     if min_size <= 1:
         singles = sorted(pos for pos, v in position_groups.items() if len(v) <= 1)
-        logger.debug("get_ipp_groups: non-repeating position value(s): %s", singles)
+        logger.debug("group_series_by_position: non-repeating position value(s): %s", singles)
         if len(singles) == len(position_groups):
             return None, "NO (single image per position -- not multiphasic)"
         return None, "INCONCLUSIVE (irregular position grouping)"
-    logger.debug("get_ipp_groups: every position value repeats (min count = %d)", min_size)
+    logger.debug("group_series_by_position: every position value repeats (min count = %d)", min_size)
 
-    distinct_sizes = sorted(set(sizes))
+    distinct_sizes = sorted(set(frame_counts))
     if len(distinct_sizes) != 1:
-        logger.debug("get_ipp_groups: distinct position-group sizes seen: %s", distinct_sizes)
+        logger.debug("group_series_by_position: distinct position-group sizes seen: %s", distinct_sizes)
         return None, "INCONCLUSIVE (irregular position grouping)"
-    logger.debug("get_ipp_groups: all position groups are the same size (%d)", distinct_sizes[0])
+    logger.debug("group_series_by_position: all position groups are the same size (%d)", distinct_sizes[0])
 
     # A single position repeated many times (e.g. a cine loop over one slice) has
     # a phase axis but no position axis -- not multiphasic in the sense this
     # script cares about (splitting a 3D+time series apart by position), even
     # though every check above passes for it.
     if len(position_groups) <= 1:
-        logger.debug("get_ipp_groups: only %d distinct position value(s)", len(position_groups))
+        logger.debug("group_series_by_position: only %d distinct position value(s)", len(position_groups))
         return None, "NO (only one distinct position -- not multiphasic)"
 
-    return dict(position_groups), f"YES ({len(position_groups)} positions x {sizes[0]} phases)"
+    return dict(position_groups), f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
 
 def candidate_checks(
     groups: dict[str, list[pydicom.Dataset]],
