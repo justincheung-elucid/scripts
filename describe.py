@@ -11,14 +11,13 @@ from pathlib import Path
 
 import pydicom
 import pandas as pd
-import yaml
 
 from src.pydicom_utils import (
     tag_to_string,
     describe_name,
     index_elements,
     format_sequence_value,
-    parse_tag_string,
+    load_tag_list,
     NameContext,
 )
 from src.pandas_utils import print_df_custom
@@ -246,7 +245,7 @@ def build_rows(
     context = NameContext(ds)
     if filter_paths:
         elements = index_elements(ds)
-        tags = load_filters(filter_paths)
+        tags = load_tag_list(filter_paths)
         if combo_groups:
             # A --combos tag not covered by --filters would otherwise silently
             # never get computed, making that combo slot always None.
@@ -346,30 +345,6 @@ def build_rows_for_directory(
     ]
     aggregated += compute_combo_rows(combo_groups, file_values_by_tag)
     return aggregated
-
-def load_filters(entries: list[str]) -> list[pydicom.tag.BaseTag]:
-    tags: list[pydicom.tag.BaseTag] = []
-    seen: set[pydicom.tag.BaseTag] = set()
-
-    def add(tag: pydicom.tag.BaseTag):
-        if tag not in seen:
-            seen.add(tag)
-            tags.append(tag)
-
-    for entry in entries:
-        tag = parse_tag_string(entry)
-        if tag is not None:
-            add(tag)
-            continue
-        # Not a recognizable tag string -- treat it as a YAML file path instead.
-        with open(entry) as f:
-            tag_strs = yaml.safe_load(f) or []
-        for tag_str in tag_strs:
-            tag = parse_tag_string(str(tag_str))
-            if tag is None:
-                raise ValueError(f"Could not parse tag {tag_str!r} in {entry}")
-            add(tag)
-    return tags
 
 # ===== BOILERPLATE =================================
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pydicom
+import yaml
 from pydicom.datadict import dictionary_description
 
 # dicom3tools (David Clunie's private DICOM tag dictionaries, vendored as a git
@@ -70,6 +71,33 @@ def parse_tag_string(s: str) -> pydicom.tag.BaseTag | None:
         return None
     group_hex, element_hex = match.groups()
     return pydicom.tag.Tag(int(group_hex, 16), int(element_hex, 16))
+
+def load_tag_list(entries: list[str]) -> list[pydicom.tag.BaseTag]:
+    """Each entry is either a bare tag string or a path to a YAML file containing
+    a plain list of tag strings (see taglists/) -- shared by any script that lets
+    the user restrict itself to a specific set of tags via the CLI."""
+    tags: list[pydicom.tag.BaseTag] = []
+    seen: set[pydicom.tag.BaseTag] = set()
+
+    def add(tag: pydicom.tag.BaseTag):
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+
+    for entry in entries:
+        tag = parse_tag_string(entry)
+        if tag is not None:
+            add(tag)
+            continue
+        # Not a recognizable tag string -- treat it as a YAML file path instead.
+        with open(entry) as f:
+            tag_strs = yaml.safe_load(f) or []
+        for tag_str in tag_strs:
+            tag = parse_tag_string(str(tag_str))
+            if tag is None:
+                raise ValueError(f"Could not parse tag {tag_str!r} in {entry}")
+            add(tag)
+    return tags
 
 def index_elements(ds: pydicom.Dataset) -> dict[pydicom.tag.BaseTag, pydicom.DataElement]:
     """Single-pass tag -> element lookup, including elements nested inside sequence

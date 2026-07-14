@@ -1,0 +1,16 @@
+# Cornerstone3D's own splitImageIdsBy4DTags candidate order for a per-slice
+# discriminating tag: standard tags first, vendor-private last. Opt into this
+# curated list explicitly with `--tags taglists/multiphasic_candidates.yaml` --
+# multiphasic_separator.py's default is to try every tag found in the file
+# instead, since in practice this fixed list rarely turns out to contain the
+# tag that actually validates.
+
+- "0020,0100"  # TemporalPositionIdentifier
+- "0018,9087"  # DiffusionBValue
+- "0018,1060"  # TriggerTime
+- "0018,0081"  # EchoTime
+- "0018,0086"  # EchoNumbers
+- "2001,1003"  # Philips private B-value
+- "0019,100C"  # Siemens private B-value
+- "0043,1039"  # GE private B-value
+- "0054,1300"  # PET FrameReferenceTime
