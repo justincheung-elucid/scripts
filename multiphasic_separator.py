@@ -149,6 +149,16 @@ def parse_tag(s: str) -> pydicom.tag.BaseTag:
 def tag_value(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> str | None:
     return str(ds[tag].value) if tag in ds else None
 
+def numeric_tag_value(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> int | None:
+    """None for a missing value *or* one that can't be read as an int -- both are
+    equally disqualifying for ranking by this tag."""
+    if tag not in ds:
+        return None
+    try:
+        return int(ds[tag].value)
+    except (TypeError, ValueError):
+        return None
+
 def get_all_tags_in(
     context: NameContext, ds: pydicom.Dataset, exclude: pydicom.tag.BaseTag
 ) -> list[tuple[str, pydicom.tag.BaseTag]]:
@@ -241,8 +251,8 @@ def separate_phases_by_4d_tag(
             frame_groups[frame_value].append(ds)
 
             frame_value_set.add(frame_value)
+            # Enforce condition that 
             if len(frame_value_set) - 1 < j:
-                # Check that the set is growing 
                 logger.debug(
                     "candidate_checks(%s): position=%r has a repeated value %r", # TODO - would it be nice to know what other position we saw the repeat value at? do another set subtraction like the second condition failure?
                     name, positions[i], frame_value,
@@ -267,41 +277,75 @@ def separate_phases_by_4d_tag(
     return frame_groups
 
 def separate_phases_by_instance_number(
-    position_groups: dict[str, list[pydicom.Dataset]]
-) -> tuple[list[Check], bool]:
+    position_groups: dict[str, list[pydicom.Dataset]],
+) -> defaultdict[int, list[pydicom.Dataset]] | None:
     """
-    """
-    per_group_values = {}
-    for pos, dslist in position_groups.items():
-        values = []
-        for ds in dslist:
-            values.append(tag_value(ds, parse_tag(MONOTONIC_TAG)))
-        per_group_values[pos] = values
-    bad_groups = []
-    for pos, values in per_group_values.items():
-        if len(values) != len(set(values)):
-            bad_groups.append(pos)
-    if bad_groups:
-        example = bad_groups[0]
-        example_values = per_group_values[example]
-        dupe_set = set()
-        for v in example_values:
-            if example_values.count(v) > 1:
-                dupe_set.add(v)
-        dupes = sorted(dupe_set)
-        detail = (f"{len(bad_groups)}/{len(position_groups)} group(s) have a repeated value "
-                  f"(e.g. position={example!r} repeats {dupes})")
-    else:
-        detail = f"checked {len(position_groups)} group(s), no repeats found"
-    check_distinct_within_group = Check(
-        "Within each position group, tag values are all unique",
-        not bad_groups,
-        detail,
-    )
+    Ranks each position group's images by InstanceNumber, now that no
+    discriminating tag validated. Unlike separate_phases_by_4d_tag, the tag's
+    raw value isn't the phase identity -- rank (0, 1, 2, ...) is, since which
+    rank means which *real* phase is a separate, unsolved problem (see module
+    docstring). frame_groups is keyed by that rank, not by the tag's value.
 
-    checks = [check_distinct_within_group]
-    overall = check_distinct_within_group.passed
-    return checks, overall
+    Every position's frames are explicitly sorted by numeric InstanceNumber
+    before being bucketed by rank, so "all 1st-ranked images across positions
+    land in frame_groups[0], all 2nd-ranked in frame_groups[1], etc." holds by
+    construction -- regardless of what order position_groups' own lists happen
+    to be in, there's no reliance on them already being in InstanceNumber
+    order. A repeated value within one position is then just an adjacent-equal
+    pair in that sorted order (a sorted list with a duplicate always has it
+    right next to itself), which is what's checked below, instead of needing a
+    running set to detect it.
+
+    Returns None if InstanceNumber is missing/non-numeric for any file, or if
+    any position has an ambiguous (repeated) value -- either way there's
+    nothing to reliably rank by. It's left to the caller to decide what a
+    single, unsplit phase should look like in that case (see
+    separate_phases()) -- this function only ever deals in ranked frame_groups,
+    or nothing.
+    """
+    instance_tag = parse_tag(MONOTONIC_TAG)
+    first_ds = next(iter(position_groups.values()))[0]
+    name = describe_name(NameContext(first_ds), instance_tag)
+
+    frame_groups: defaultdict[int, list[pydicom.Dataset]] = defaultdict(list)
+    positions = list(position_groups.keys())
+
+    for i in range(len(positions)):
+        frames = position_groups[positions[i]]
+
+        # Sort all of the datasets at this position
+        instance_number_ds_pairs = []
+        for ds in frames:
+            instance_number = numeric_tag_value(ds, instance_tag)
+            if instance_number is None:
+                logger.debug(
+                    "separate_phases_by_instance_number(%s): position=%r has a file with a "
+                    "missing or non-numeric instance number. Cannot...",
+                    name, positions[i],
+                )
+                report.monotonic_result = (name, instance_tag, [], False)
+                return None
+            instance_number_ds_pairs.append((instance_number, ds))
+        instance_number_ds_pairs.sort(key=lambda pair: pair[0])
+
+        # Distribute into frame_groups
+        for rank in range(len(instance_number_ds_pairs)):
+            instance_number, ds = instance_number_ds_pairs[rank]
+            if rank > 0 and instance_number == instance_number_ds_pairs[rank - 1][0]:
+                logger.debug(
+                    "separate_phases_by_instance_number(%s): position=%r has a repeated value %r",
+                    name, positions[i], instance_number,
+                )
+                report.monotonic_result = (name, instance_tag, [], False)
+                return None
+            frame_groups[rank].append(ds)
+
+    logger.debug(
+        "separate_phases_by_instance_number(%s): checked %d group(s), all sorted and consistent",
+        name, len(positions),
+    )
+    report.monotonic_result = (name, instance_tag, [], True)
+    return frame_groups
 
 # ===== REPORTING ====================================
 
@@ -328,10 +372,13 @@ def summarize(
         f"2. Separable by discriminating tag: {'YES -- ' + ', '.join(valid) if valid else 'NO'}"
     )
 
-    mono_name, mono_tag, _checks, mono_overall = monotonic_result
-    lines.append(
-        f"3. Sortable by {mono_name} ({tag_to_string(mono_tag)}): {'YES' if mono_overall else 'NO'}"
-    )
+    if monotonic_result is None:
+        lines.append("3. Sortable by a monotonic tag: N/A (not attempted)")
+    else:
+        mono_name, mono_tag, _checks, mono_overall = monotonic_result
+        lines.append(
+            f"3. Sortable by {mono_name} ({tag_to_string(mono_tag)}): {'YES' if mono_overall else 'NO'}"
+        )
     return lines
 
 def categorize(
@@ -406,11 +453,14 @@ def format_report(
             lines.append(f"       {check.detail}")
         lines.append("")
 
-    mono_name, mono_tag, mono_checks, mono_overall = monotonic_result
-    lines.append(f"Monotonic tag: {mono_name} ({tag_to_string(mono_tag)}): {'VALID' if mono_overall else 'rejected'}")
-    for check in mono_checks:
-        lines.append(f"     {check.label}: {status(check.passed)}")
-        lines.append(f"       {check.detail}")
+    if monotonic_result is None:
+        lines.append("Monotonic tag: not attempted (a discriminating tag already validated).")
+    else:
+        mono_name, mono_tag, mono_checks, mono_overall = monotonic_result
+        lines.append(f"Monotonic tag: {mono_name} ({tag_to_string(mono_tag)}): {'VALID' if mono_overall else 'rejected'}")
+        for check in mono_checks:
+            lines.append(f"     {check.label}: {status(check.passed)}")
+            lines.append(f"       {check.detail}")
     return "\n".join(lines) + "\n"
 
 def separate_phases(
@@ -448,12 +498,17 @@ def separate_phases(
             logging.info(f"{tag} {name} worked")
             return frame_groups
     
-    # No discriminating tag exists. The next best thing we can do to associate the phases is to assume they are at least sorted
-    monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
-    mono_checks, mono_overall = separate_phases_by_instance_number(groups)
-    report.monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
+    # No discriminating tag exists. The next best thing we can do to associate the phases is to assume they are at least sorted, and split up the positional groups by phase based just on that order
+    frame_groups = separate_phases_by_instance_number(groups)
+    if frame_groups is None:
+        # Couldn't even rank by InstanceNumber -- nothing tells us which image
+        # is which phase, so treat the whole series as a single, unsplit
+        # phase. `datasets` is already the flat list of every image in the
+        # series (built above), so reuse it instead of re-deriving the same
+        # thing from `groups`.
+        frame_groups = {0: datasets}
 
-    return [input_folder]  # always include the original series folder (no actual phase splitting yet)
+    return frame_groups
 
 def main():
     args = parse_args()
