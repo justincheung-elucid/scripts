@@ -56,12 +56,15 @@ directory, or a filter that matches nothing) is skipped with a message on stderr
 rather than aborting the whole batch; the process exits 1 only if *every* path
 failed.
 
-Every path's rendered table is **always written to `outputs/`** (relative to
-`describe.py`'s own location, not the caller's cwd — created if needed, gitignored),
+Every path's rendered table is **always written to `outputs/describe/`** (relative
+to `describe.py`'s own location, not the caller's cwd — created if needed,
+gitignored; namespaced under its own subdirectory, like
+`multiphasic_separator.py` uses `outputs/multiphasic_separator/`, so the two
+scripts running against the same input path don't clobber each other's file),
 named after a sanitized version of that path's resolved absolute path
 (`sanitize_path_for_filename` — non `[A-Za-z0-9._-]` runs become `_`), e.g.
-`~/data/foo/series_002` → `outputs/home_user_data_foo_series_002.txt`. This has no
-toggle yet (always on). The table itself is *not* printed to stdout — only a
+`~/data/foo/series_002` → `outputs/describe/home_user_data_foo_series_002.txt`.
+This has no toggle yet (always on). The table itself is *not* printed to stdout — only a
 `Wrote <path>` pointer per input path — by explicit preference: the old
 per-file `tqdm`-style progress bar was removed for the same reason (its `\r`-driven
 updates look like garbage wherever `\r` doesn't mean "overwrite in place," e.g.

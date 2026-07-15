@@ -70,10 +70,10 @@ def parse_args():
     return parser.parse_args()
 
 # ===== CORE IMPLEMENTATION =========================
-# Namespaced under a subdirectory (rather than outputs/ directly, like describe.py
-# uses) so running this script and describe.py against the same folder don't
-# clobber each other's file -- sanitize_path_for_filename only keys off the input
-# path, not which tool produced the report.
+# Namespaced under a subdirectory (rather than outputs/ directly) so running
+# this script and describe.py against the same folder don't clobber each
+# other's file -- sanitize_path_for_filename only keys off the input path, not
+# which tool produced the report.
 OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs" / "multiphasic_separator"
 
 def sanitize_path_for_filename(path: Path) -> str:
@@ -149,16 +149,6 @@ def parse_tag(s: str) -> pydicom.tag.BaseTag:
 def tag_value(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> str | None:
     return str(ds[tag].value) if tag in ds else None
 
-def numeric_tag_value(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> int | None:
-    """None for a missing value *or* one that can't be read as an int -- both are
-    equally disqualifying for a strict numeric-ordering test."""
-    if tag not in ds:
-        return None
-    try:
-        return int(ds[tag].value)
-    except (TypeError, ValueError):
-        return None
-
 def get_all_tags_in(
     context: NameContext, ds: pydicom.Dataset, exclude: pydicom.tag.BaseTag
 ) -> list[tuple[str, pydicom.tag.BaseTag]]:
@@ -219,7 +209,7 @@ def group_series_by_position(
     report.multiphasic_verdict = f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
     return position_groups
 
-def test_4d_tag(
+def separate_phases_by_4d_tag(
     position_groups: dict[str, list[pydicom.Dataset]],
     tag: pydicom.tag.BaseTag,
     name: str,
@@ -276,50 +266,16 @@ def test_4d_tag(
     report.candidate_results.append((name, tag, [], True))
     return frame_groups
 
-def monotonic_checks(
-    datasets: list[pydicom.Dataset],
-    groups: dict[str, list[pydicom.Dataset]],
-    tag: pydicom.tag.BaseTag,
+def separate_phases_by_instance_number(
+    position_groups: dict[str, list[pydicom.Dataset]]
 ) -> tuple[list[Check], bool]:
-    """Diagnostics for the monotonic-tag check (see module docstring). Unlike a
-    discriminator tag, this tag isn't expected to repeat the same value set across
-    position groups -- there's no "identical set across groups" check here. It only
-    needs to (a) impose a real, strict order across the whole series, matching the
-    filename order files were already read in, and (b) be unique within each
-    position group, so that group's images can be ranked at all -- which rank means
-    which phase is a separate, currently-unsolved problem (see module docstring)."""
-    numeric_values = []
-    for ds in datasets:
-        numeric_values.append(numeric_tag_value(ds, tag))
-    missing = 0
-    for v in numeric_values:
-        if v is None:
-            missing += 1
-    if missing:
-        check_increasing = Check(
-            "Tag is strictly increasing across all files (filename order)",
-            False,
-            f"{missing}/{len(datasets)} file(s) have a missing or non-numeric value",
-        )
-    else:
-        violation = None
-        for i in range(1, len(numeric_values)):
-            if numeric_values[i] <= numeric_values[i - 1]:
-                violation = i
-                break
-        check_increasing = Check(
-            "Tag is strictly increasing across all files (filename order)",
-            violation is None,
-            ("strictly increasing across all files" if violation is None else
-             f"file {violation}'s value ({numeric_values[violation]}) does not exceed "
-             f"the previous file's value ({numeric_values[violation - 1]})"),
-        )
-
+    """
+    """
     per_group_values = {}
-    for pos, dslist in groups.items():
+    for pos, dslist in position_groups.items():
         values = []
         for ds in dslist:
-            values.append(tag_value(ds, tag))
+            values.append(tag_value(ds, parse_tag(MONOTONIC_TAG)))
         per_group_values[pos] = values
     bad_groups = []
     for pos, values in per_group_values.items():
@@ -333,18 +289,18 @@ def monotonic_checks(
             if example_values.count(v) > 1:
                 dupe_set.add(v)
         dupes = sorted(dupe_set)
-        detail = (f"{len(bad_groups)}/{len(groups)} group(s) have a repeated value "
+        detail = (f"{len(bad_groups)}/{len(position_groups)} group(s) have a repeated value "
                   f"(e.g. position={example!r} repeats {dupes})")
     else:
-        detail = f"checked {len(groups)} group(s), no repeats found"
+        detail = f"checked {len(position_groups)} group(s), no repeats found"
     check_distinct_within_group = Check(
         "Within each position group, tag values are all unique",
         not bad_groups,
         detail,
     )
 
-    checks = [check_increasing, check_distinct_within_group]
-    overall = check_increasing.passed and check_distinct_within_group.passed
+    checks = [check_distinct_within_group]
+    overall = check_distinct_within_group.passed
     return checks, overall
 
 # ===== REPORTING ====================================
@@ -485,11 +441,16 @@ def separate_phases(
     # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
     candidates = get_all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
 
+    # TODO - start with generic tags, then fall down to vendor-specific parsings, then last resort is all tags... might want to time it
     for name, tag in candidates:
-        test_4d_tag(groups, tag, name)
-
+        frame_groups = separate_phases_by_4d_tag(groups, tag, name)
+        if frame_groups is not None:
+            logging.info(f"{tag} {name} worked")
+            return frame_groups
+    
+    # No discriminating tag exists. The next best thing we can do to associate the phases is to assume they are at least sorted
     monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
-    mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
+    mono_checks, mono_overall = separate_phases_by_instance_number(groups)
     report.monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
     return [input_folder]  # always include the original series folder (no actual phase splitting yet)

@@ -134,7 +134,11 @@ def parse_args():
     return args
 
 # ===== CORE IMPLEMENTATION =========================
-OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs"
+# Namespaced under a subdirectory (rather than outputs/ directly) so running
+# this script and multiphasic_separator.py against the same folder don't
+# clobber each other's file -- sanitize_path_for_filename only keys off the
+# input path, not which tool produced the report.
+OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs" / "describe"
 
 def sanitize_path_for_filename(path: Path) -> str:
     resolved = str(path.resolve()).lstrip("/")
