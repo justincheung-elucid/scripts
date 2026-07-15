@@ -221,61 +221,60 @@ def group_series_by_position(
 
 def test_4d_tag(
     name: str,
-    groups: dict[str, list[pydicom.Dataset]],
+    position_groups: dict[str, list[pydicom.Dataset]],
     tag: pydicom.tag.BaseTag,
-) -> None:
+) -> defaultdict[str | None, list[pydicom.Dataset]] | None:
     """
     Checks that the provided tag can act as a discriminating tag for a 4th dimension
     within groups arranged by position.
 
     Assume the positional groups are provided as evenly-sized.
-     
+
     Based on Cornerstone3D's test4DTag conditions
+
+    Returns frame_groups -- every dataset bucketed by its candidate-tag value,
+    across all positions -- same as cornerstone3D's test4DTag return value, or
+    None if either check fails (built up speculatively along the way regardless,
+    same as cornerstone3D does, and simply discarded on failure).
     """
-    # Within each position group, candidate values must be distinct.
-    per_group_values: dict[str, list[str | None]] = {}
-    for pos, dslist in groups.items():
-        values = []
-        for ds in dslist:
-            values.append(tag_value(ds, tag))
-        per_group_values[pos] = values
-        if len(values) != len(set(values)):
-            dupe_set = set()
-            for v in values:
-                if values.count(v) > 1:
-                    dupe_set.add(v)
-            dupes = sorted(dupe_set)
+    frame_groups: defaultdict[str | None, list[pydicom.Dataset]] = defaultdict(list)
+    first_frame_value_set = None
+
+    positions = list(position_groups.keys())
+    for i in range(len(positions)):
+        frames = position_groups[positions[i]]
+
+        frame_value_set = set()
+        for j in range(len(frames)):
+            ds = frames[j]
+            frame_value = tag_value(ds, tag)
+            frame_groups[frame_value].append(ds)
+
+            frame_value_set.add(frame_value)
+            if len(frame_value_set) - 1 < j:
+                # Check that the set is growing 
+                logger.debug(
+                    "candidate_checks(%s): position=%r has a repeated value %r", # TODO - would it be nice to know what other position we saw the repeat value at? do another set subtraction like the second condition failure?
+                    name, positions[i], frame_value,
+                )
+                report.candidate_results.append((name, tag, [], False))
+                return None
+
+        if i == 0:
+            first_frame_value_set = frame_value_set
+        elif frame_value_set != first_frame_value_set:
             logger.debug(
-                "candidate_checks(%s): position=%r has a repeated value %s",
-                name, pos, dupes,
+                "candidate_checks(%s): position=%r's value-set differs from position=%r's "
+                "(e.g. one has %s that the other lacks, and vice versa %s)",
+                name, positions[i], positions[0],
+                sorted(frame_value_set - first_frame_value_set), sorted(first_frame_value_set - frame_value_set),
             )
             report.candidate_results.append((name, tag, [], False))
-            return
-    logger.debug("candidate_checks(%s): checked %d group(s), no repeats found", name, len(groups))
-
-    # The set of candidate values must be identical across every group.
-    value_sets: dict[frozenset, int] = defaultdict(int)
-    for values in per_group_values.values():
-        value_sets[frozenset(values)] += 1
-    if len(value_sets) > 1:
-        # Aid debugging by showing examples of groups that disagree
-        first_set, *other_sets = value_sets.keys()
-        differing_set = None
-        for s in other_sets:
-            if s != first_set:
-                differing_set = s
-                break
-        logger.debug(
-            "candidate_checks(%s): %d distinct value-sets found across %d groups "
-            "(e.g. one group has %s that another lacks, and vice versa %s)",
-            name, len(value_sets), len(groups),
-            sorted(first_set - differing_set), sorted(differing_set - first_set),
-        )
-        report.candidate_results.append((name, tag, [], False))
-        return
-    logger.debug("candidate_checks(%s): all %d groups share one value-set", name, len(groups))
+            return None
+    logger.debug("candidate_checks(%s): checked %d group(s), all distinct and consistent", name, len(position_groups))
 
     report.candidate_results.append((name, tag, [], True))
+    return frame_groups
 
 def monotonic_checks(
     datasets: list[pydicom.Dataset],
