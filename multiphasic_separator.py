@@ -21,17 +21,19 @@ directory that directly contains *.dcm files -- is processed independently, so
 pointing this at a higher-level export directory (e.g. one containing many
 patient/series subdirectories) works the same as pointing it at one series.
 
-Absorbs tag_combos.py's more verbose per-condition diagnostics (value-repeat
-counts, unique-value products, distinct-count histograms, bad-group examples)
-so every attempted tag's full check breakdown -- not just VALID/rejected -- is
-available, without having to reach for a separate script."""
+Originally absorbed tag_combos.py's more verbose per-condition diagnostics
+(value-repeat counts, unique-value products, distinct-count histograms) --
+most of that turned out to be fully implied by the two checks actually ported
+from Cornerstone3D's test4DTag, once every position group is already known to
+be the same size, so it was dropped as redundant (see candidate_checks()).
+What detail remains surfaces only via DEBUG logging, not the saved report."""
 
 import argparse
 import logging
 import re
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pydicom
@@ -104,20 +106,31 @@ class Check:
     passed: bool
     detail: str
 
+CandidateResult = tuple[str, pydicom.tag.BaseTag, list[Check], bool]
+
 @dataclass
 class Report:
-    """Global, mutable scratch space for verdict strings that exist purely for
-    human-readable reporting. Deliberately NOT threaded through function return
-    values/parameters (that would be the "right" way to do it) -- kept as global
-    state instead so that functions like group_series_by_position(), which are
-    meant to mirror what a future C++ port would actually compute, don't have
-    their signatures polluted with string-building concerns that only matter for
-    this Python script's own reporting. Reset at the top of every
-    separate_phases() call."""
+    """Global, mutable scratch space for everything that exists purely for
+    human-readable reporting -- verdict strings and the intermediate results
+    behind them. Deliberately NOT threaded through function return values/
+    parameters (that would be the "right" way to do it) -- kept as global state
+    instead so that functions like group_series_by_position() and
+    separate_phases(), which are meant to mirror what a future C++ port would
+    actually compute/return, don't have their signatures polluted with
+    reporting concerns that only matter for this Python script's own output.
+    Reset at the top of every separate_phases() call, in main()."""
     multiphasic_verdict: str | None = None
+    total_files: int = 0
+    groups: defaultdict[str, list[pydicom.Dataset]] | None = None
+    candidate_results: list[CandidateResult] = field(default_factory=list)
+    monotonic_result: CandidateResult | None = None
 
     def reset(self):
         self.multiphasic_verdict = None
+        self.total_files = 0
+        self.groups = None
+        self.candidate_results = []
+        self.monotonic_result = None
 
 report = Report()
 
@@ -202,84 +215,53 @@ def group_series_by_position(
     return position_groups
 
 def candidate_checks(
+    name: str,
     groups: dict[str, list[pydicom.Dataset]],
     tag: pydicom.tag.BaseTag,
-    total_files: int,
-) -> tuple[list[Check], bool]:
-    """Verbose per-candidate diagnostics, ported from tag_combos.py's print_summary
-    (repeat counts, unique-value products, distinct-count histograms, bad-group
-    examples). Overall pass/fail is still exactly Cornerstone3D's test4DTag (the
-    last two checks) -- the rest are informative, not gating."""
+) -> None:
+    """
+    Checks that the provided tag can act as a discriminating tag for a 4th dimension
+    within groups arranged by position.
+
+    Assume the positional groups are provided as evenly-sized.
+     
+    Based on Cornerstone3D's test4DTag conditions
+    """
     per_group_values = {pos: [tag_value(ds, tag) for ds in dslist] for pos, dslist in groups.items()}
-    counts: dict[str | None, int] = defaultdict(int)
-    for values in per_group_values.values():
-        for v in values:
-            counts[v] += 1
 
-    min_count = min(counts.values())
-    singles = sorted(v for v, c in counts.items() if c <= 1)
-    check_repeats = Check(
-        "Every candidate value repeats (count > 1)",
-        min_count > 1,
-        f"min count = {min_count}" + (f"; non-repeating value(s): {singles}" if singles else ""),
-    )
-
-    product = len(groups) * len(counts)
-    check_product = Check(
-        "unique(position) x unique(candidate) == total files",
-        product == total_files,
-        f"{len(groups)} x {len(counts)} = {product}, total files = {total_files}",
-    )
-
-    distinct_counts = sorted(set(counts.values()))
-    check_equal_counts = Check(
-        "All candidate value counts are equal to each other",
-        len(distinct_counts) == 1,
-        f"distinct counts seen: {distinct_counts}",
-    )
-
+    # Within each position group, candidate values must be distinct.
     bad_groups = [pos for pos, values in per_group_values.items() if len(values) != len(set(values))]
     if bad_groups:
         example = bad_groups[0]
         example_values = per_group_values[example]
         dupes = sorted({v for v in example_values if example_values.count(v) > 1})
-        detail = (f"{len(bad_groups)}/{len(groups)} group(s) have a repeated value "
-                  f"(e.g. position={example!r} repeats {dupes})")
-    else:
-        detail = f"checked {len(groups)} group(s), no repeats found"
-    check_distinct_within_group = Check(
-        "(test4DTag) Within each position group, candidate values are all distinct",
-        not bad_groups,
-        detail,
-    )
+        logger.debug(
+            "candidate_checks(%s): %d/%d group(s) have a repeated value (e.g. position=%r repeats %s)",
+            name, len(bad_groups), len(groups), example, dupes,
+        )
+        report.candidate_results.append((name, tag, [], False))
+        return
+    logger.debug("candidate_checks(%s): checked %d group(s), no repeats found", name, len(groups))
 
+    # The set of candidate values must be identical across every group.
     value_sets: dict[frozenset, int] = defaultdict(int)
     for values in per_group_values.values():
         value_sets[frozenset(values)] += 1
     if len(value_sets) > 1:
-        # Summarize by set *size* (weighted by how many groups have a set of that
-        # size), rather than dumping one line per distinct set -- there can be as
-        # many distinct sets as there are groups.
-        size_histogram: dict[int, int] = defaultdict(int)
-        for value_set, n in value_sets.items():
-            size_histogram[len(value_set)] += n
-        detail = (f"{len(value_sets)} distinct value-sets found across {len(groups)} groups; "
-                  f"group count by set size: {dict(sorted(size_histogram.items()))}")
-    else:
-        [(only_set, _)] = value_sets.items()
-        detail = f"all {len(groups)} groups share one set of {len(only_set)} values"
-    check_consistent_sets = Check(
-        "(test4DTag) The set of candidate values is identical across every position group",
-        len(value_sets) <= 1,
-        detail,
-    )
+        # Aid debugging by showing examples of groups that disagree
+        first_set, *other_sets = value_sets.keys()
+        differing_set = next(s for s in other_sets if s != first_set)
+        logger.debug(
+            "candidate_checks(%s): %d distinct value-sets found across %d groups "
+            "(e.g. one group has %s that another lacks, and vice versa %s)",
+            name, len(value_sets), len(groups),
+            sorted(first_set - differing_set), sorted(differing_set - first_set),
+        )
+        report.candidate_results.append((name, tag, [], False))
+        return
+    logger.debug("candidate_checks(%s): all %d groups share one value-set", name, len(groups))
 
-    checks = [
-        check_repeats, check_product, check_equal_counts,
-        check_distinct_within_group, check_consistent_sets,
-    ]
-    overall = check_distinct_within_group.passed and check_consistent_sets.passed
-    return checks, overall
+    report.candidate_results.append((name, tag, [], True))
 
 def monotonic_checks(
     datasets: list[pydicom.Dataset],
@@ -335,7 +317,6 @@ def monotonic_checks(
     return checks, overall
 
 # ===== REPORTING ====================================
-CandidateResult = tuple[str, pydicom.tag.BaseTag, list[Check], bool]
 
 def summarize(
     multiphasic_verdict: str,
@@ -441,51 +422,36 @@ def separate_phases(
     input_folder: Path,
 ) -> list[Path]:
     """
-    input_folder is assumed to be a flat folder of DICOMs. 
+    input_folder is assumed to be a flat folder of DICOMs.
 
     Output is list of folders corresponding to newly created separated-out series.
     """
-    ret = [input_folder] # always include the original series folder
-
     files = sorted(input_folder.glob("*.dcm"))
-    if not files:
-        print(f"No DICOM files found directly under {input_folder}.", file=sys.stderr)
-        return False
+
+    assert files, "No DICOMs here... is this possible in product?"
+
     datasets = [pydicom.dcmread(f, stop_before_pixels=True) for f in files]
+    report.total_files = len(datasets)
+    context = NameContext(datasets[0]) # don't port to C++
 
+    # 0. Group by position.
     groups = group_series_by_position(datasets)
+    report.groups = groups
     if groups is None:
-        # No separation.
-        return [input_folder]
+        logging.info(f"Does not look multiphasic: {input_folder}")
+        return [input_folder]  # no separation possible
 
-    # candidates = [(describe_name(NameContext(datasets[0]), tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
-    candidates = all_tags_in(NameContext(datasets[0]), datasets[0], exclude=parse_tag(POSITION_TAG))
+    # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
+    candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
 
-    candidate_results = []
-    monotonic_result = None
-    if groups is not None:
-        for name, tag in candidates:
-            checks, overall = candidate_checks(groups, tag, len(datasets))
-            candidate_results.append((name, tag, checks, overall))
+    for name, tag in candidates:
+        candidate_checks(name, groups, tag)
 
-        monotonic_name = describe_name(NameContext(datasets[0]), parse_tag(MONOTONIC_TAG))
-        mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
-        monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
+    monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
+    mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
+    report.monotonic_result = (monotonic_name, parse_tag(MONOTONIC_TAG), mono_checks, mono_overall)
 
-    report_text = format_report(
-        input_folder, len(datasets), report.multiphasic_verdict,
-        groups, candidate_results, monotonic_result,
-    )
-    category = categorize(groups, candidate_results, monotonic_result)
-    output_file = output_path_for(input_folder, category)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(report_text)
-
-    print(input_folder)
-    for line in summarize(report.multiphasic_verdict, groups, candidate_results, monotonic_result):
-        print(f"  {line}")
-    print(f"  Wrote {output_file}")
-    return True
+    return [input_folder]  # always include the original series folder (no actual phase splitting yet)
 
 def main():
     args = parse_args()
@@ -497,7 +463,25 @@ def main():
             continue
         for series_dir in series_dirs:
             report.reset()
-            ret = separate_phases(series_dir)
+            output_folders = separate_phases(series_dir)
+            if not output_folders:
+                continue
+
+            report_text = format_report(
+                series_dir, report.total_files, report.multiphasic_verdict,
+                report.groups, report.candidate_results, report.monotonic_result,
+            )
+            category = categorize(report.groups, report.candidate_results, report.monotonic_result)
+            output_file = output_path_for(series_dir, category)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text(report_text)
+
+            print(series_dir)
+            for line in summarize(
+                report.multiphasic_verdict, report.groups, report.candidate_results, report.monotonic_result
+            ):
+                print(f"  {line}")
+            print(f"  Wrote {output_file}")
 
 # ===== BOILERPLATE =================================
 if __name__ == "__main__":
