@@ -159,7 +159,7 @@ def numeric_tag_value(ds: pydicom.Dataset, tag: pydicom.tag.BaseTag) -> int | No
     except (TypeError, ValueError):
         return None
 
-def all_tags_in(
+def get_all_tags_in(
     context: NameContext, ds: pydicom.Dataset, exclude: pydicom.tag.BaseTag
 ) -> list[tuple[str, pydicom.tag.BaseTag]]:
     """(name, tag) for every top-level, non-sequence tag in `ds` except `exclude` --
@@ -475,7 +475,7 @@ def separate_phases(
     report.total_files = len(datasets)
     context = NameContext(datasets[0]) # don't port to C++
 
-    # 0. Group by position.
+    # Try to group series by position, enforce constraints on "rectangular" group shape.
     groups = group_series_by_position(datasets)
     report.groups = groups
     if groups is None:
@@ -483,7 +483,7 @@ def separate_phases(
         return [input_folder]  # no separation possible
 
     # candidates = [(describe_name(context, tag), tag) for tag in load_tag_list("taglists/multiphasic_candidates.yaml")] # in case we want to try a different approach. Claude, don't port this.
-    candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
+    candidates = get_all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
 
     for name, tag in candidates:
         test_4d_tag(name, groups, tag)
