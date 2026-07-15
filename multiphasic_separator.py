@@ -98,7 +98,10 @@ def find_series_directories(path: Path) -> list[Path]:
     every level) naturally finds these regardless of how deeply nested they are,
     and reduces to just [path] itself for the common case of already pointing
     this at a single series directory."""
-    return sorted({p.parent for p in path.rglob("*.dcm")})
+    series_dirs = set()
+    for p in path.rglob("*.dcm"):
+        series_dirs.add(p.parent)
+    return sorted(series_dirs)
 
 @dataclass
 class Check:
@@ -162,11 +165,11 @@ def all_tags_in(
     """(name, tag) for every top-level, non-sequence tag in `ds` except `exclude` --
     names go through describe_name so private tags (e.g. GE) get their
     dicom3tools-backed names instead of falling back to the bare tag string."""
-    return [
-        (describe_name(context, elem.tag, elem), elem.tag)
-        for elem in ds
-        if elem.tag != exclude and elem.VR != "SQ"
-    ]
+    result = []
+    for elem in ds:
+        if elem.tag != exclude and elem.VR != "SQ":
+            result.append((describe_name(context, elem.tag, elem), elem.tag))
+    return result
 
 def group_series_by_position(
     datasets: list[pydicom.Dataset],
@@ -191,7 +194,9 @@ def group_series_by_position(
     logger.debug("group_series_by_position: all %d files have a position value", len(datasets))
 
     # Check if the number of phases is the same across every position
-    frame_counts = [len(v) for v in position_groups.values()]
+    frame_counts = []
+    for v in position_groups.values():
+        frame_counts.append(len(v))
     if len(set(frame_counts)) != 1:
         # Once we know sizes differ, log a breakdown for debugging
         size_histogram: dict[int, int] = defaultdict(int)
@@ -214,7 +219,7 @@ def group_series_by_position(
     report.multiphasic_verdict = f"YES ({len(position_groups)} positions x {frame_counts[0]} phases)"
     return position_groups
 
-def candidate_checks(
+def test_4d_tag(
     name: str,
     groups: dict[str, list[pydicom.Dataset]],
     tag: pydicom.tag.BaseTag,
@@ -227,20 +232,25 @@ def candidate_checks(
      
     Based on Cornerstone3D's test4DTag conditions
     """
-    per_group_values = {pos: [tag_value(ds, tag) for ds in dslist] for pos, dslist in groups.items()}
-
     # Within each position group, candidate values must be distinct.
-    bad_groups = [pos for pos, values in per_group_values.items() if len(values) != len(set(values))]
-    if bad_groups:
-        example = bad_groups[0]
-        example_values = per_group_values[example]
-        dupes = sorted({v for v in example_values if example_values.count(v) > 1})
-        logger.debug(
-            "candidate_checks(%s): %d/%d group(s) have a repeated value (e.g. position=%r repeats %s)",
-            name, len(bad_groups), len(groups), example, dupes,
-        )
-        report.candidate_results.append((name, tag, [], False))
-        return
+    per_group_values: dict[str, list[str | None]] = {}
+    for pos, dslist in groups.items():
+        values = []
+        for ds in dslist:
+            values.append(tag_value(ds, tag))
+        per_group_values[pos] = values
+        if len(values) != len(set(values)):
+            dupe_set = set()
+            for v in values:
+                if values.count(v) > 1:
+                    dupe_set.add(v)
+            dupes = sorted(dupe_set)
+            logger.debug(
+                "candidate_checks(%s): position=%r has a repeated value %s",
+                name, pos, dupes,
+            )
+            report.candidate_results.append((name, tag, [], False))
+            return
     logger.debug("candidate_checks(%s): checked %d group(s), no repeats found", name, len(groups))
 
     # The set of candidate values must be identical across every group.
@@ -250,7 +260,11 @@ def candidate_checks(
     if len(value_sets) > 1:
         # Aid debugging by showing examples of groups that disagree
         first_set, *other_sets = value_sets.keys()
-        differing_set = next(s for s in other_sets if s != first_set)
+        differing_set = None
+        for s in other_sets:
+            if s != first_set:
+                differing_set = s
+                break
         logger.debug(
             "candidate_checks(%s): %d distinct value-sets found across %d groups "
             "(e.g. one group has %s that another lacks, and vice versa %s)",
@@ -275,8 +289,13 @@ def monotonic_checks(
     filename order files were already read in, and (b) be unique within each
     position group, so that group's images can be ranked at all -- which rank means
     which phase is a separate, currently-unsolved problem (see module docstring)."""
-    numeric_values = [numeric_tag_value(ds, tag) for ds in datasets]
-    missing = sum(1 for v in numeric_values if v is None)
+    numeric_values = []
+    for ds in datasets:
+        numeric_values.append(numeric_tag_value(ds, tag))
+    missing = 0
+    for v in numeric_values:
+        if v is None:
+            missing += 1
     if missing:
         check_increasing = Check(
             "Tag is strictly increasing across all files (filename order)",
@@ -284,10 +303,11 @@ def monotonic_checks(
             f"{missing}/{len(datasets)} file(s) have a missing or non-numeric value",
         )
     else:
-        violation = next(
-            (i for i in range(1, len(numeric_values)) if numeric_values[i] <= numeric_values[i - 1]),
-            None,
-        )
+        violation = None
+        for i in range(1, len(numeric_values)):
+            if numeric_values[i] <= numeric_values[i - 1]:
+                violation = i
+                break
         check_increasing = Check(
             "Tag is strictly increasing across all files (filename order)",
             violation is None,
@@ -296,12 +316,24 @@ def monotonic_checks(
              f"the previous file's value ({numeric_values[violation - 1]})"),
         )
 
-    per_group_values = {pos: [tag_value(ds, tag) for ds in dslist] for pos, dslist in groups.items()}
-    bad_groups = [pos for pos, values in per_group_values.items() if len(values) != len(set(values))]
+    per_group_values = {}
+    for pos, dslist in groups.items():
+        values = []
+        for ds in dslist:
+            values.append(tag_value(ds, tag))
+        per_group_values[pos] = values
+    bad_groups = []
+    for pos, values in per_group_values.items():
+        if len(values) != len(set(values)):
+            bad_groups.append(pos)
     if bad_groups:
         example = bad_groups[0]
         example_values = per_group_values[example]
-        dupes = sorted({v for v in example_values if example_values.count(v) > 1})
+        dupe_set = set()
+        for v in example_values:
+            if example_values.count(v) > 1:
+                dupe_set.add(v)
+        dupes = sorted(dupe_set)
         detail = (f"{len(bad_groups)}/{len(groups)} group(s) have a repeated value "
                   f"(e.g. position={example!r} repeats {dupes})")
     else:
@@ -333,7 +365,10 @@ def summarize(
         lines.append("3. Sortable by a monotonic tag: N/A (not multiphasic, or inconclusive)")
         return lines
 
-    valid = [f"{name} ({tag_to_string(tag)})" for name, tag, _checks, overall in candidate_results if overall]
+    valid = []
+    for name, tag, _checks, overall in candidate_results:
+        if overall:
+            valid.append(f"{name} ({tag_to_string(tag)})")
     lines.append(
         f"2. Separable by discriminating tag: {'YES -- ' + ', '.join(valid) if valid else 'NO'}"
     )
@@ -355,7 +390,12 @@ def categorize(
     sortable by the monotonic tag, else outright unseparable."""
     if groups is None:
         return CATEGORY_NOT_MULTIPHASIC
-    if any(overall for _name, _tag, _checks, overall in candidate_results):
+    has_valid_candidate = False
+    for _name, _tag, _checks, overall in candidate_results:
+        if overall:
+            has_valid_candidate = True
+            break
+    if has_valid_candidate:
         return CATEGORY_DISCRIMINATOR_TAG
     if monotonic_result is not None and monotonic_result[3]:
         return CATEGORY_INSTANCE_NUMBER
@@ -430,7 +470,9 @@ def separate_phases(
 
     assert files, "No DICOMs here... is this possible in product?"
 
-    datasets = [pydicom.dcmread(f, stop_before_pixels=True) for f in files]
+    datasets = []
+    for f in files:
+        datasets.append(pydicom.dcmread(f, stop_before_pixels=True))
     report.total_files = len(datasets)
     context = NameContext(datasets[0]) # don't port to C++
 
@@ -445,7 +487,7 @@ def separate_phases(
     candidates = all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
 
     for name, tag in candidates:
-        candidate_checks(name, groups, tag)
+        test_4d_tag(name, groups, tag)
 
     monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
     mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
