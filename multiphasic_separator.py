@@ -220,9 +220,9 @@ def group_series_by_position(
     return position_groups
 
 def test_4d_tag(
-    name: str,
     position_groups: dict[str, list[pydicom.Dataset]],
     tag: pydicom.tag.BaseTag,
+    name: str,
 ) -> defaultdict[str | None, list[pydicom.Dataset]] | None:
     """
     Checks that the provided tag can act as a discriminating tag for a 4th dimension
@@ -486,7 +486,7 @@ def separate_phases(
     candidates = get_all_tags_in(context, datasets[0], exclude=parse_tag(POSITION_TAG)) # TODO - how would you implement this in C++?
 
     for name, tag in candidates:
-        test_4d_tag(name, groups, tag)
+        test_4d_tag(groups, tag, name)
 
     monotonic_name = describe_name(context, parse_tag(MONOTONIC_TAG))
     mono_checks, mono_overall = monotonic_checks(datasets, groups, parse_tag(MONOTONIC_TAG))
