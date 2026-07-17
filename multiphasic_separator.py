@@ -26,9 +26,11 @@ Originally absorbed tag_combos.py's more verbose per-condition diagnostics
 most of that turned out to be fully implied by the two checks actually ported
 from Cornerstone3D's test4DTag, once every position group is already known to
 be the same size, so it was dropped as redundant (see candidate_checks()).
-What detail remains surfaces only via DEBUG logging, not the saved report."""
+What detail remains surfaces only via DEBUG logging, which main() also captures
+to a companion .log file alongside each series' saved report."""
 
 import argparse
+import io
 import logging
 import re
 import sys
@@ -435,7 +437,7 @@ def format_report(
     ]
 
     if groups is None:
-        lines.append("Structural precondition failed -- no candidate tags were evaluated.")
+        lines.append("Could not form positional groups -- no candidate tags were evaluated.")
         return "\n".join(lines) + "\n"
 
     group_size = len(next(iter(groups.values())))
@@ -512,6 +514,12 @@ def separate_phases(
 
 def main():
     args = parse_args()
+    # Highest verbosity (DEBUG) on the root logger, so every logger.debug() call
+    # in this module -- otherwise dropped by the default WARNING threshold before
+    # it ever reaches a handler -- is actually emitted for the per-series
+    # log_handler below to capture.
+    logging.getLogger().setLevel(logging.DEBUG)
+
     for path_arg in args.paths:
         path = Path(path_arg)
         series_dirs = find_series_directories(path)
@@ -520,7 +528,19 @@ def main():
             continue
         for series_dir in series_dirs:
             report.reset()
-            output_folders = separate_phases(series_dir)
+
+            # Captured per series (rather than one handler for the whole run) so
+            # each series' log ends up alongside its own report, named/categorized
+            # the same way -- not one giant undifferentiated log for the batch.
+            log_buffer = io.StringIO()
+            log_handler = logging.StreamHandler(log_buffer)
+            log_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+            root_logger = logging.getLogger()
+            root_logger.addHandler(log_handler)
+            try:
+                output_folders = separate_phases(series_dir)
+            finally:
+                root_logger.removeHandler(log_handler)
             if not output_folders:
                 continue
 
@@ -533,12 +553,16 @@ def main():
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text(report_text)
 
+            log_file = output_file.with_suffix(".log")
+            log_file.write_text(log_buffer.getvalue())
+
             print(series_dir)
             for line in summarize(
                 report.multiphasic_verdict, report.groups, report.candidate_results, report.monotonic_result
             ):
                 print(f"  {line}")
             print(f"  Wrote {output_file}")
+            print(f"  Wrote {log_file}")
 
 # ===== BOILERPLATE =================================
 if __name__ == "__main__":
